@@ -110,26 +110,39 @@ cargo build --release
 Скомпилированный бинарник будет находиться по пути:  
 `./target/release/yandex-music-tui`
 
+### 3. Настройка быстрого запуска (`ymtp`)
+
+Чтобы запускать плеер из любого каталога терминала по короткой команде `ymtp`, создайте симлинк в `~/.local/bin`:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf $(pwd)/target/release/yandex-music-tui ~/.local/bin/ymtp
+```
+
+*(Убедитесь, что `~/.local/bin` добавлен в переменную `$PATH` — в большинстве современных шеллов вроде Bash, Zsh и Fish это настроено по умолчанию)*.
+
 ---
 
 ## Запуск и флаги командной строки
 
 ```bash
 # Обычный запуск плеера
-./target/release/yandex-music-tui
+ymtp
 
 # Открыть графическое окно авторизации (Webview OAuth)
-./target/release/yandex-music-tui --login
+ymtp --login
 
 # Авторизоваться по готовому токену
-./target/release/yandex-music-tui --token "ВАШ_ТОКЕН"
+ymtp --token "ВАШ_ТОКЕН"
 
 # Сбросить сохранённый токен (выйти из аккаунта)
-./target/release/yandex-music-tui --logout
+ymtp --logout
 
 # Справка по флагам
-./target/release/yandex-music-tui --help
+ymtp --help
 ```
+
+*(Если вы не создавали симлинк `ymtp`, запускайте бинарник напрямую: `./target/release/yandex-music-tui`)*.
 
 Файл конфигурации сохраняется по стандарту XDG:  
 `~/.config/yandex-music-tui/config.toml`
