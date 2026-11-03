@@ -6,6 +6,7 @@ pub use wave::WaveBatch;
 
 use anyhow::Result;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fmt;
 use std::time::Duration;
 
@@ -75,6 +76,12 @@ impl YandexClient {
         self.send(req).await
     }
 
+    pub(crate) async fn post_form(&self, path: &str, form: &[(&str, String)]) -> Result<Value> {
+        let url = format!("{BASE_URL}/{path}");
+        let req = self.auth_headers(self.http.post(url)).form(form);
+        self.send(req).await
+    }
+
     async fn send(&self, req: reqwest::RequestBuilder) -> Result<Value> {
         let resp = req.send().await?;
         let status = resp.status();
@@ -121,25 +128,7 @@ impl YandexClient {
         let body = self
             .get_json(&format!("users/{uid}/likes/tracks"), &[])
             .await?;
-        let result = result_or_body(&body);
-
-        let mut ids = Vec::new();
-        if let Some(tracks) = result
-            .get("library")
-            .and_then(|library| library.get("tracks"))
-            .and_then(Value::as_array)
-        {
-            for item in tracks {
-                let id = item.get("id").and_then(value_id);
-                let album = item.get("albumId").and_then(value_id);
-                if let Some(id) = id {
-                    ids.push(match album {
-                        Some(album) => format!("{id}:{album}"),
-                        None => id,
-                    });
-                }
-            }
-        }
+        let ids = library_track_ids(&body);
 
         let mut tracks = Vec::new();
         for chunk in ids.chunks(100) {
@@ -156,6 +145,40 @@ impl YandexClient {
         }
 
         Ok(tracks)
+    }
+
+    /// Множество любимых треков (id или id:albumId) для синхронизации состояния лайков.
+    pub async fn liked_track_ids(&self, uid: u64) -> Result<HashSet<String>> {
+        let body = self
+            .get_json(&format!("users/{uid}/likes/tracks"), &[])
+            .await?;
+        Ok(library_track_ids(&body).into_iter().collect())
+    }
+
+    /// Множество треков, помеченных «Не рекомендовать».
+    pub async fn disliked_track_ids(&self, uid: u64) -> Result<HashSet<String>> {
+        let body = self
+            .get_json(&format!("users/{uid}/dislikes/tracks"), &[])
+            .await?;
+        Ok(library_track_ids(&body).into_iter().collect())
+    }
+
+    /// Поставить или снять лайк. Добавление лайка автоматически снимает дизлайк.
+    pub async fn set_track_like(&self, uid: u64, track_id: &str, liked: bool) -> Result<()> {
+        let action = if liked { "add-multiple" } else { "remove" };
+        let form = [("track-ids", track_id.to_string())];
+        self.post_form(&format!("users/{uid}/likes/tracks/{action}"), &form)
+            .await?;
+        Ok(())
+    }
+
+    /// Поставить или снять дизлайк. Добавление дизлайка автоматически снимает лайк.
+    pub async fn set_track_dislike(&self, uid: u64, track_id: &str, disliked: bool) -> Result<()> {
+        let action = if disliked { "add-multiple" } else { "remove" };
+        let form = [("track-ids", track_id.to_string())];
+        self.post_form(&format!("users/{uid}/dislikes/tracks/{action}"), &form)
+            .await?;
+        Ok(())
     }
 
     /// Любимые исполнители: /users/{uid}/likes/artists/page
@@ -427,6 +450,29 @@ impl YandexClient {
 /// Некоторые ручки Яндекса то заворачивают ответ в result, то отдают его сверху.
 fn result_or_body(body: &Value) -> &Value {
     body.get("result").unwrap_or(body)
+}
+
+/// Идентификаторы треков из блока `library.tracks` (лайки или дизлайки).
+fn library_track_ids(body: &Value) -> Vec<String> {
+    let result = result_or_body(body);
+    let mut ids = Vec::new();
+    if let Some(tracks) = result
+        .get("library")
+        .and_then(|library| library.get("tracks"))
+        .and_then(Value::as_array)
+    {
+        for item in tracks {
+            let id = item.get("id").and_then(value_id);
+            let album = item.get("albumId").and_then(value_id);
+            if let Some(id) = id {
+                ids.push(match album {
+                    Some(album) => format!("{id}:{album}"),
+                    None => id,
+                });
+            }
+        }
+    }
+    ids
 }
 
 /// Разбор ответа `/account/about` (формат Murglar: result.{uid,login,hasPlus}).

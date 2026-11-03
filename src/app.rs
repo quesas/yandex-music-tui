@@ -6,6 +6,7 @@ use crate::player::TrackEnd;
 use crate::ui;
 use anyhow::Context;
 use ratatui::widgets::ListState;
+use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -160,11 +161,17 @@ pub struct App {
 
     pub playback_source: PlaybackSource,
 
+    pub liked_ids: HashSet<String>,
+    pub disliked_ids: HashSet<String>,
+    pub ratings_loaded: bool,
+
     wave_seq: u64,
     library_seq: u64,
     search_seq: u64,
     tracklist_seq: u64,
     audio_seq: u64,
+    ratings_seq: u64,
+    rating_seq: u64,
 }
 
 impl App {
@@ -182,6 +189,9 @@ impl App {
         self.library_artists.clear();
         self.library_playlists.clear();
         self.library_loaded = [false; 3];
+        self.liked_ids.clear();
+        self.disliked_ids.clear();
+        self.ratings_loaded = false;
         self.pending_wave = false;
         self.player.stop();
         self.audio_seq += 1;
@@ -242,6 +252,14 @@ impl App {
         format!("{} треков", self.row_count())
     }
 
+    pub fn is_liked(&self, track: &Track) -> bool {
+        self.liked_ids.contains(&track.id)
+    }
+
+    pub fn is_disliked(&self, track: &Track) -> bool {
+        self.disliked_ids.contains(&track.id)
+    }
+
     fn ensure_login(&mut self) -> bool {
         if self.has_token() {
             true
@@ -265,6 +283,25 @@ enum AppAction {
     None,
     TriggerLogin,
     Logout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RatingAction {
+    Like,
+    Unlike,
+    Dislike,
+    Undislike,
+}
+
+impl RatingAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Like => "Лайк поставлен",
+            Self::Unlike => "Лайк убран",
+            Self::Dislike => "Дизлайк поставлен",
+            Self::Undislike => "Дизлайк убран",
+        }
+    }
 }
 
 enum ApiEvent {
@@ -292,6 +329,16 @@ enum ApiEvent {
     },
     Audio {
         result: Result<Vec<u8>, String>,
+        seq: u64,
+    },
+    Ratings {
+        result: Result<(HashSet<String>, HashSet<String>), String>,
+        seq: u64,
+    },
+    Rating {
+        result: Result<(), String>,
+        action: RatingAction,
+        track: Track,
         seq: u64,
     },
 }
@@ -328,6 +375,9 @@ pub async fn run() -> anyhow::Result<()> {
         search: SearchState::default(),
         track_list: None,
         playback_source: PlaybackSource::Other,
+        liked_ids: HashSet::new(),
+        disliked_ids: HashSet::new(),
+        ratings_loaded: false,
         screen: if has_token {
             Screen::Wave
         } else {
@@ -351,6 +401,8 @@ pub async fn run() -> anyhow::Result<()> {
         search_seq: 0,
         tracklist_seq: 0,
         audio_seq: 0,
+        ratings_seq: 0,
+        rating_seq: 0,
     };
     app.player.engine.volume = app.config.volume;
     app.volume_before_mute = app.config.volume.max(1);
@@ -461,6 +513,7 @@ fn handle_api_event(app: &mut App, event: ApiEvent, tx: &mpsc::Sender<ApiEvent>)
                     app.config.apply_account(&info);
                     let _ = app.config.save();
                     app.account = Some(info);
+                    load_ratings(app, tx);
                     if app.screen == Screen::Login {
                         app.screen = Screen::Wave;
                     }
@@ -656,6 +709,98 @@ fn handle_api_event(app: &mut App, event: ApiEvent, tx: &mpsc::Sender<ApiEvent>)
                 }
             }
         }
+        ApiEvent::Ratings { result, seq } => {
+            if seq != app.ratings_seq {
+                return;
+            }
+            match result {
+                Ok((liked, disliked)) => {
+                    app.liked_ids = liked.into_iter().map(|id| track_key(&id)).collect();
+                    app.disliked_ids = disliked.into_iter().map(|id| track_key(&id)).collect();
+                    app.ratings_loaded = true;
+                }
+                Err(e) => {
+                    if !handle_session_error(app, &e) {
+                        app.status_message = format!("Не удалось загрузить лайки: {e}");
+                    }
+                }
+            }
+        }
+        ApiEvent::Rating {
+            result,
+            action,
+            track,
+            seq,
+        } => {
+            if seq != app.rating_seq {
+                return;
+            }
+            match result {
+                Ok(()) => {
+                    apply_rating(app, action, &track);
+                    app.status_message =
+                        format!("{}: {} — {}", action.label(), track.artist, track.title);
+                    if matches!(action, RatingAction::Unlike | RatingAction::Dislike)
+                        && app.screen == Screen::Library
+                        && app.library_tab == LibraryTab::Tracks
+                    {
+                        remove_from_library(app, &track);
+                    }
+                }
+                Err(e) => {
+                    if !handle_session_error(app, &e) {
+                        app.status_message = format!("Ошибка лайка: {e}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Ключ состояния лайка — только id трека, без привязки к альбому.
+fn track_key(full_id: &str) -> String {
+    full_id.split(':').next().unwrap_or(full_id).to_string()
+}
+
+/// Обновить локальное состояние лайков/дизлайков после успешного запроса.
+fn apply_rating(app: &mut App, action: RatingAction, track: &Track) {
+    let key = track.id.clone();
+    match action {
+        RatingAction::Like => {
+            app.disliked_ids.remove(&key);
+            app.liked_ids.insert(key);
+        }
+        RatingAction::Unlike => {
+            app.liked_ids.remove(&key);
+        }
+        RatingAction::Dislike => {
+            app.liked_ids.remove(&key);
+            app.disliked_ids.insert(key);
+        }
+        RatingAction::Undislike => {
+            app.disliked_ids.remove(&key);
+        }
+    }
+}
+
+fn remove_from_library(app: &mut App, track: &Track) {
+    let Some(index) = app
+        .library_tracks
+        .iter()
+        .position(|item| item.id == track.id)
+    else {
+        return;
+    };
+    app.library_tracks.remove(index);
+    let len = app.library_tracks.len();
+    if len == 0 {
+        app.list_state.select(None);
+    } else if let Some(selected) = app.list_state.selected() {
+        if selected >= len {
+            app.list_state.select(Some(len - 1));
+        } else if selected > index {
+            app.list_state.select(Some(selected - 1));
+        }
     }
 }
 
@@ -761,6 +906,130 @@ fn load_library(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
                 .map_err(|e| e.to_string()),
         };
         let _ = tx.send(ApiEvent::Library { result, tab, seq }).await;
+    });
+}
+
+fn load_ratings(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
+    let Some(uid) = app.uid() else {
+        return;
+    };
+    app.ratings_seq += 1;
+    let seq = app.ratings_seq;
+    let client = app.client.clone();
+    let tx = tx.clone();
+    app.ratings_loaded = false;
+
+    tokio::spawn(async move {
+        let result = async {
+            let liked = client.liked_track_ids(uid).await?;
+            let disliked = client.disliked_track_ids(uid).await?;
+            Ok::<_, anyhow::Error>((liked, disliked))
+        }
+        .await
+        .map_err(|e| e.to_string());
+        let _ = tx.send(ApiEvent::Ratings { result, seq }).await;
+    });
+}
+
+/// Трек, к которому применяется лайк/дизлайк.
+///
+/// В «Моей волне» это текущий играющий трек, в остальных списках — выбранный.
+fn rating_target(app: &App) -> Option<Track> {
+    let selected = |tracks: &[Track]| app.selected().and_then(|index| tracks.get(index).cloned());
+    let current = || app.player.current_track().cloned();
+
+    match app.screen {
+        Screen::Wave => current().or_else(|| selected(&app.wave)),
+        Screen::Library => match app.library_tab {
+            LibraryTab::Tracks => selected(&app.library_tracks).or_else(current),
+            _ => current(),
+        },
+        Screen::Search => app
+            .selected()
+            .and_then(|index| match app.search.results.get(index) {
+                Some(SearchItem::Track(track)) => Some(track.clone()),
+                _ => None,
+            })
+            .or_else(current),
+        Screen::TrackList => app
+            .track_list
+            .as_ref()
+            .and_then(|list| selected(&list.tracks))
+            .or_else(current),
+        Screen::Login => None,
+    }
+}
+
+fn toggle_like(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
+    let Some(track) = rating_target(app) else {
+        app.status_message = "Нет трека для лайка".into();
+        return;
+    };
+    if !app.ensure_login() {
+        return;
+    }
+    if !app.ratings_loaded {
+        load_ratings(app, tx);
+        app.status_message = "Загружаем состояние лайков, повторите через секунду...".into();
+        return;
+    }
+    let action = if app.liked_ids.contains(&track.id) {
+        RatingAction::Unlike
+    } else {
+        RatingAction::Like
+    };
+    send_rating(app, tx, action, track);
+}
+
+fn toggle_dislike(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
+    let Some(track) = rating_target(app) else {
+        app.status_message = "Нет трека для дизлайка".into();
+        return;
+    };
+    if !app.ensure_login() {
+        return;
+    }
+    if !app.ratings_loaded {
+        load_ratings(app, tx);
+        app.status_message = "Загружаем состояние лайков, повторите через секунду...".into();
+        return;
+    }
+    let action = if app.disliked_ids.contains(&track.id) {
+        RatingAction::Undislike
+    } else {
+        RatingAction::Dislike
+    };
+    send_rating(app, tx, action, track);
+}
+
+fn send_rating(app: &mut App, tx: &mpsc::Sender<ApiEvent>, action: RatingAction, track: Track) {
+    let Some(uid) = app.uid() else {
+        app.status_message = "Не удалось определить UID пользователя".into();
+        return;
+    };
+    app.rating_seq += 1;
+    let seq = app.rating_seq;
+    let client = app.client.clone();
+    let tx = tx.clone();
+    let track_id = track.full_id();
+    app.status_message = format!("{}: {} — {}...", action.label(), track.artist, track.title);
+
+    tokio::spawn(async move {
+        let result = match action {
+            RatingAction::Like => client.set_track_like(uid, &track_id, true).await,
+            RatingAction::Unlike => client.set_track_like(uid, &track_id, false).await,
+            RatingAction::Dislike => client.set_track_dislike(uid, &track_id, true).await,
+            RatingAction::Undislike => client.set_track_dislike(uid, &track_id, false).await,
+        }
+        .map_err(|e| e.to_string());
+        let _ = tx
+            .send(ApiEvent::Rating {
+                result,
+                action,
+                track,
+                seq,
+            })
+            .await;
     });
 }
 
@@ -1137,6 +1406,8 @@ fn handle_key(
         }
         (KeyCode::Char('l') | KeyCode::Char('L'), _) => return AppAction::TriggerLogin,
         (KeyCode::Char('o') | KeyCode::Char('O'), _) => return AppAction::Logout,
+        (KeyCode::Char('f') | KeyCode::Char('F'), _) => toggle_like(app, tx),
+        (KeyCode::Char('d') | KeyCode::Char('D'), _) => toggle_dislike(app, tx),
         _ => {}
     }
 

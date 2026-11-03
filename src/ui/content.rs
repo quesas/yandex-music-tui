@@ -152,6 +152,11 @@ fn track_items(app: &App, tracks: &[Track]) -> Vec<ListItem<'static>> {
                     Style::new().dim(),
                 ),
             ];
+            if app.is_liked(track) {
+                spans.push(Span::styled("  ♥", Style::new().fg(Color::Red)));
+            } else if app.is_disliked(track) {
+                spans.push(Span::styled("  ✗", Style::new().fg(Color::DarkGray)));
+            }
             if !track.available {
                 spans.push(Span::styled("  ✕", Style::new().fg(Color::Red)));
             }
@@ -217,11 +222,19 @@ fn search_items(items: &[crate::api::SearchItem], app: &App) -> Vec<ListItem<'st
             } else {
                 Style::new().add_modifier(Modifier::BOLD)
             };
-            ListItem::new(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(format!("[{:>2}] ", item.tag()), tag_style),
                 Span::styled(item.title().to_string(), title_style),
                 Span::styled(format!("  {}", item.subtitle()), Style::new().dim()),
-            ]))
+            ];
+            if let crate::api::SearchItem::Track(track) = item {
+                if app.is_liked(track) {
+                    spans.push(Span::styled("  ♥", Style::new().fg(Color::Red)));
+                } else if app.is_disliked(track) {
+                    spans.push(Span::styled("  ✗", Style::new().fg(Color::DarkGray)));
+                }
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect()
 }
@@ -274,6 +287,7 @@ fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
         Line::from(Span::styled("2 библиотека", Style::new().dim())),
         Line::from(Span::styled("3 поиск", Style::new().dim())),
         Line::from(Span::styled("Tab разделы", Style::new().dim())),
+        Line::from(Span::styled("f лайк · d дизлайк", Style::new().dim())),
         Line::from(Span::styled("r обновить", Style::new().dim())),
         Line::from(Span::styled("o выйти", Style::new().dim())),
     ];

@@ -109,19 +109,19 @@ fn draw_status(f: &mut Frame, app: &App, area: ratatui::prelude::Rect) {
         Screen::Login if app.login_token_editing => " Enter проверить · Esc отмена · q выход ",
         Screen::Login => " Enter войти через Яндекс · t токен · Esc поиск без входа · q выход ",
         Screen::Wave => {
-            " ↑/↓ выбор · Enter играть · ␣ пауза · +/- громкость · m mute · r обновить · 2 библиотека · 3 поиск "
+            " ↑/↓ выбор · Enter играть · f лайк · d дизлайк · ␣ пауза · +/- громкость · m mute · r обновить · 2 библиотека · 3 поиск "
         }
         Screen::Library => {
-            " Tab раздел · ↑/↓ выбор · Enter играть · +/- громкость · m mute · r обновить · Esc назад "
+            " Tab раздел · ↑/↓ выбор · Enter играть · f лайк · d дизлайк · +/- громкость · m mute · r обновить · Esc назад "
         }
         Screen::Search if app.search.editing => {
             " Введите запрос · Enter искать · Tab фильтр · Esc отмена "
         }
         Screen::Search => {
-            " ↑/↓ выбор · Enter открыть/играть · Tab фильтр · / новый запрос · +/- громкость · Esc назад "
+            " ↑/↓ выбор · Enter открыть/играть · f лайк · d дизлайк · Tab фильтр · / новый запрос · +/- громкость · Esc назад "
         }
         Screen::TrackList => {
-            " ↑/↓ выбор · Enter играть · +/- громкость · m mute · Esc назад · r обновить "
+            " ↑/↓ выбор · Enter играть · f лайк · d дизлайк · +/- громкость · m mute · Esc назад · r обновить "
         }
     };
     f.render_widget(
