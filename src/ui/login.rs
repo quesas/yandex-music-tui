@@ -33,11 +33,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::styled("  Enter  ", Style::new().fg(Color::Yellow)),
-            Span::raw("открыть окно Яндекс OAuth (webview)"),
+            Span::raw("открыть вход Яндекс OAuth в браузере"),
         ]),
         Line::from(vec![
             Span::styled("  t      ", Style::new().fg(Color::Yellow)),
-            Span::raw("вставить OAuth-токен вручную"),
+            Span::raw("вставить токен или адрес кнопки «Открыть приложение»"),
         ]),
         Line::from(vec![
             Span::styled("  Esc    ", Style::new().fg(Color::Yellow)),
@@ -57,7 +57,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(format!("{masked}█"), Style::new().fg(Color::Yellow)),
         ]));
         lines.push(Line::from(Span::styled(
-            "  Вставьте токен (Ctrl+Shift+V), Enter — проверить",
+            "  Вставьте токен или адрес кнопки «Открыть приложение» (Ctrl+Shift+V), Enter — проверить",
             Style::new().dim(),
         )));
     } else {

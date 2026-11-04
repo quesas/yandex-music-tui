@@ -15,6 +15,19 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if let Some(callback) = args
+        .iter()
+        .position(|arg| arg == "--oauth-callback")
+        .and_then(|pos| args.get(pos + 1))
+        .cloned()
+        .or_else(|| {
+            args.iter()
+                .find_map(|arg| arg.strip_prefix("--oauth-callback=").map(str::to_string))
+        })
+    {
+        return run_oauth_callback(&callback);
+    }
+
     if args.iter().any(|arg| arg == "--logout") {
         return run_cli_logout();
     }
@@ -50,8 +63,8 @@ fn print_help() {
     println!();
     println!("Использование:");
     println!("  yandex-music-tui                 запустить TUI");
-    println!("  yandex-music-tui --login         войти через окно Яндекс OAuth (webview)");
-    println!("  yandex-music-tui --token <TOKEN> войти по готовому OAuth-токену");
+    println!("  yandex-music-tui --login         открыть вход Яндекс OAuth в браузере");
+    println!("  yandex-music-tui --token <TOKEN> войти по готовому OAuth-токену или URL");
     println!("  yandex-music-tui --logout        удалить сохранённый токен");
     println!("  yandex-music-tui --help          показать эту справку");
     println!();
@@ -67,33 +80,49 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 }
 
 fn run_cli_login() -> anyhow::Result<()> {
-    println!("Запуск окна авторизации Яндекс Музыки (webview oauth, как в Murglar)...");
-    let token = match auth::login_webview()? {
-        Some(t) => t,
-        None => {
-            println!("Авторизация отменена пользователем (окно закрыто).");
-            return Ok(());
+    match auth::register_uri_handler() {
+        Ok(()) => println!("Обработчик music-application:// зарегистрирован."),
+        Err(e) => {
+            println!("Не удалось зарегистрировать обработчик music-application://: {e}");
+            println!("После входа скопируйте адрес кнопки «Открыть приложение» вручную.");
         }
-    };
+    }
 
+    println!("Открываю страницу авторизации Яндекс Музыки в браузере...");
+    println!();
+    println!("Если браузер не открылся, перейдите по ссылке вручную:");
+    println!("{}", auth::AUTH_START_URL);
+    println!();
+    if let Err(e) = auth::open_auth_url() {
+        println!("Не удалось открыть браузер автоматически: {e}");
+    }
+    println!(
+        "После входа нажмите в браузере кнопку «Открыть приложение» — токен вернётся автоматически."
+    );
+    println!("Если кнопка не сработала: ПКМ по ней → «Копировать адрес ссылки», затем:");
+    println!("  yandex-music-tui --token \"<СКОПИРОВАННАЯ_ССЫЛКА>\"");
+    Ok(())
+}
+
+fn run_oauth_callback(url: &str) -> anyhow::Result<()> {
+    let token = auth::parse_token_input(url)
+        .context("в OAuth-редиректе не найден параметр access_token")?;
+    config::Config::store_pending_token(&token)?;
+    Ok(())
+}
+
+fn run_cli_token(token_input: &str) -> anyhow::Result<()> {
+    let token = auth::parse_token_input(token_input)
+        .context("не удалось найти OAuth-токен во введённом значении")?;
+
+    println!("Проверка OAuth-токена Яндекс Музыки...");
     let account = block_on(async {
         let client = api::YandexClient::new(Some(token.clone()));
         client.account().await
     })
-    .context("токен получен, но профиль Яндекс Музыки не подтвердился")?;
-
-    save_login(token, &account)
-}
-
-fn run_cli_token(token: &str) -> anyhow::Result<()> {
-    println!("Проверка OAuth-токена Яндекс Музыки...");
-    let account = block_on(async {
-        let client = api::YandexClient::new(Some(token.trim().to_string()));
-        client.account().await
-    })
     .context("токен не принят Яндекс Музыкой")?;
 
-    save_login(token.trim().to_string(), &account)
+    save_login(token, &account)
 }
 
 fn save_login(token: String, account: &api::AccountInfo) -> anyhow::Result<()> {

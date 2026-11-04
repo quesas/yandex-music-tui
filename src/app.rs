@@ -357,7 +357,7 @@ struct TrackListData {
 
 pub async fn run() -> anyhow::Result<()> {
     let config = Config::load();
-    let initial_token = config.oauth_token.clone();
+    let initial_token = Config::take_pending_token().or_else(|| config.oauth_token.clone());
     let has_token = initial_token.is_some();
     let mut app = App {
         client: YandexClient::new(initial_token),
@@ -419,6 +419,15 @@ pub async fn run() -> anyhow::Result<()> {
     let mut last_tick = tokio::time::Instant::now();
 
     while !app.should_exit {
+        if let Some(token) = Config::take_pending_token() {
+            terminal.clear()?;
+            app.config.oauth_token = Some(token.clone());
+            app.client = YandexClient::new(Some(token));
+            app.login_token_editing = false;
+            app.status_message = "Токен получен из браузера, проверка профиля...".into();
+            spawn_account(api_tx.clone(), app.client.clone(), true);
+        }
+
         terminal.draw(|f| ui::draw(f, &mut app))?;
 
         while let Ok(event) = api_rx.try_recv() {
@@ -442,12 +451,23 @@ pub async fn run() -> anyhow::Result<()> {
 
         match action {
             AppAction::TriggerLogin => {
-                // Временно восстанавливаем терминал для чистого запуска GUI окна
-                ratatui::restore();
-                let login_result = crate::auth::login_webview();
-                terminal = ratatui::init();
+                let handler_result = crate::auth::register_uri_handler();
+                let browser_result = crate::auth::open_auth_url();
+                app.login_token_editing = true;
+                app.login_token_input.clear();
+                app.status_message = match (handler_result, browser_result) {
+                    (Ok(()), Ok(())) => {
+                        "Браузер открыт. После входа нажмите «Открыть приложение» — токен подхватится автоматически"
+                            .into()
+                    }
+                    (Err(e), Ok(())) => format!(
+                        "Браузер открыт, но обработчик не установлен: {e}. Скопируйте адрес кнопки «Открыть приложение» и вставьте сюда"
+                    ),
+                    (_, Err(e)) => format!(
+                        "Не удалось открыть браузер: {e}. Откройте страницу входа вручную и вставьте токен"
+                    ),
+                };
                 terminal.clear()?;
-                after_webview_login(&mut app, login_result, &api_tx);
             }
             AppAction::Logout => match app.logout() {
                 Ok(()) => app.status_message = "Вы вышли из Яндекс Музыки".into(),
@@ -468,29 +488,6 @@ pub async fn run() -> anyhow::Result<()> {
 
     ratatui::restore();
     Ok(())
-}
-
-fn after_webview_login(
-    app: &mut App,
-    login_result: anyhow::Result<Option<String>>,
-    tx: &mpsc::Sender<ApiEvent>,
-) {
-    match login_result {
-        Ok(Some(token)) => {
-            app.config.oauth_token = Some(token.clone());
-            app.client = YandexClient::new(Some(token));
-            app.screen = Screen::Login;
-            app.login_token_editing = false;
-            app.status_message = "Токен получен, проверка профиля...".into();
-            spawn_account(tx.clone(), app.client.clone(), true);
-        }
-        Ok(None) => {
-            app.status_message = "Вход отменён: окно авторизации закрыто".into();
-        }
-        Err(e) => {
-            app.status_message = format!("Ошибка запуска webview: {e}. Можно вставить токен: t");
-        }
-    }
 }
 
 fn handle_api_event(app: &mut App, event: ApiEvent, tx: &mpsc::Sender<ApiEvent>) {
@@ -1267,18 +1264,18 @@ fn handle_key(
     // --- Ввод токена на экране входа ---
     if app.screen == Screen::Login && app.login_token_editing {
         match key.code {
-            KeyCode::Enter => {
-                let token = app.login_token_input.trim().to_string();
-                if token.is_empty() {
-                    app.status_message = "Токен пустой".into();
-                } else {
+            KeyCode::Enter => match crate::auth::parse_token_input(&app.login_token_input) {
+                Some(token) => {
                     app.login_token_editing = false;
                     app.config.oauth_token = Some(token.clone());
                     app.client = YandexClient::new(Some(token));
                     app.status_message = "Проверка OAuth-токена...".into();
                     spawn_account(tx.clone(), app.client.clone(), true);
                 }
-            }
+                None => {
+                    app.status_message = "Это не redirect-ссылка. Скопируйте адрес кнопки «Открыть приложение» (ПКМ) или вставьте access_token".into();
+                }
+            },
             KeyCode::Esc => {
                 app.login_token_editing = false;
                 app.status_message = "Ввод токена отменён".into();

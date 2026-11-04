@@ -28,7 +28,7 @@ impl Quality {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// OAuth-токен Яндекса, полученный через webview (как в Murglar).
+    /// OAuth-токен Яндекса, полученный через браузер или введённый вручную.
     pub oauth_token: Option<String>,
     /// Логин пользователя (`ynd-login` в Murglar).
     pub login: Option<String>,
@@ -61,6 +61,30 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("yandex-music-tui")
             .join("config.toml")
+    }
+
+    /// Файл, через который браузерный OAuth-callback передаёт токен запущенному TUI.
+    pub fn pending_token_path() -> PathBuf {
+        Self::path().with_file_name("pending_token")
+    }
+
+    pub fn store_pending_token(token: &str) -> anyhow::Result<()> {
+        let path = Self::pending_token_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, token)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    pub fn take_pending_token() -> Option<String> {
+        let path = Self::pending_token_path();
+        let token = std::fs::read_to_string(&path).ok()?;
+        let _ = std::fs::remove_file(&path);
+        let token = token.trim().to_string();
+        (!token.is_empty()).then_some(token)
     }
 
     pub fn load() -> Self {

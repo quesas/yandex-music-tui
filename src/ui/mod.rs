@@ -107,7 +107,9 @@ fn draw_status(f: &mut Frame, app: &App, area: ratatui::prelude::Rect) {
 
     let hints = match app.screen {
         Screen::Login if app.login_token_editing => " Enter проверить · Esc отмена · q выход ",
-        Screen::Login => " Enter войти через Яндекс · t токен · Esc поиск без входа · q выход ",
+        Screen::Login => {
+            " Enter открыть вход в браузере · t токен · Esc поиск без входа · q выход "
+        }
         Screen::Wave => {
             " ↑/↓ выбор · Enter играть · f лайк · d дизлайк · ␣ пауза · +/- громкость · m mute · r обновить · 2 библиотека · 3 поиск "
         }
