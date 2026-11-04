@@ -1,16 +1,17 @@
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::prelude::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
+    let p = app.palette();
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Percentage(20),
-            Constraint::Length(14),
+            Constraint::Length(15),
             Constraint::Percentage(20),
         ])
         .split(area);
@@ -28,24 +29,37 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             "  Вход в Яндекс Музыку",
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Enter  ", Style::new().fg(Color::Yellow)),
-            Span::raw("открыть вход Яндекс OAuth в браузере"),
+            Span::styled("  Enter  ", Style::new().fg(p.warning)),
+            Span::styled(
+                "открыть вход Яндекс OAuth в браузере",
+                Style::new().fg(p.fg),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("  t      ", Style::new().fg(Color::Yellow)),
-            Span::raw("вставить токен или адрес кнопки «Открыть приложение»"),
+            Span::styled("  t      ", Style::new().fg(p.warning)),
+            Span::styled(
+                "вставить токен или адрес кнопки «Открыть приложение»",
+                Style::new().fg(p.fg),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("  Esc    ", Style::new().fg(Color::Yellow)),
-            Span::raw("продолжить без входа (поиск и артисты)"),
+            Span::styled("  Esc    ", Style::new().fg(p.warning)),
+            Span::styled(
+                "продолжить без входа (поиск и артисты)",
+                Style::new().fg(p.fg),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("  q      ", Style::new().fg(Color::Yellow)),
-            Span::raw("выход"),
+            Span::styled("  4      ", Style::new().fg(p.warning)),
+            Span::styled("настройки", Style::new().fg(p.fg)),
+        ]),
+        Line::from(vec![
+            Span::styled("  q      ", Style::new().fg(p.warning)),
+            Span::styled("выход", Style::new().fg(p.fg)),
         ]),
         Line::from(""),
     ];
@@ -53,17 +67,20 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     if app.login_token_editing {
         let masked = mask_token(&app.login_token_input);
         lines.push(Line::from(vec![
-            Span::styled("  Токен: ", Style::new().add_modifier(Modifier::BOLD)),
-            Span::styled(format!("{masked}█"), Style::new().fg(Color::Yellow)),
+            Span::styled(
+                "  Токен: ",
+                Style::new().fg(p.fg).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("{masked}█"), Style::new().fg(p.warning)),
         ]));
         lines.push(Line::from(Span::styled(
             "  Вставьте токен или адрес кнопки «Открыть приложение» (Ctrl+Shift+V), Enter — проверить",
-            Style::new().dim(),
+            Style::new().fg(p.dim),
         )));
     } else {
         lines.push(Line::from(Span::styled(
             "  Токен хранится только локально в config.toml",
-            Style::new().dim(),
+            Style::new().fg(p.dim),
         )));
     }
 
@@ -71,13 +88,19 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     if !app.status_message.is_empty() {
         lines.push(Line::from(Span::styled(
             format!("  {}", app.status_message),
-            Style::new().fg(Color::LightYellow),
+            Style::new().fg(p.warning),
         )));
     }
 
     f.render_widget(
         Paragraph::new(lines)
-            .block(Block::new().borders(Borders::ALL).title(" Яндекс Музыка "))
+            .block(
+                Block::new()
+                    .borders(Borders::ALL)
+                    .border_style(Style::new().fg(p.border))
+                    .title_style(Style::new().fg(p.fg))
+                    .title(" Яндекс Музыка "),
+            )
             .wrap(Wrap { trim: false }),
         panel,
     );

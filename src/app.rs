@@ -16,6 +16,8 @@ const TICK_MS: u64 = 250;
 const SEEK_STEP: i64 = 5;
 /// Шаг изменения громкости
 const VOLUME_STEP: u8 = 5;
+/// Количество пунктов на экране настроек
+const SETTINGS_COUNT: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -24,6 +26,7 @@ pub enum Screen {
     Library,
     Search,
     TrackList,
+    Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +142,7 @@ pub struct App {
     pub should_exit: bool,
 
     pub screen: Screen,
+    pub settings_back: Screen,
     pub login_token_input: String,
     pub login_token_editing: bool,
     volume_before_mute: u8,
@@ -212,6 +216,18 @@ impl App {
         self.client.token.is_some()
     }
 
+    pub fn palette(&self) -> crate::theme::Palette {
+        self.config.theme.palette()
+    }
+
+    fn open_settings(&mut self) {
+        if self.screen != Screen::Settings {
+            self.settings_back = self.screen;
+        }
+        self.screen = Screen::Settings;
+        self.reset_selection();
+    }
+
     pub fn row_count(&self) -> usize {
         match self.screen {
             Screen::Login => 0,
@@ -227,6 +243,7 @@ impl App {
                 .as_ref()
                 .map(|list| list.tracks.len())
                 .unwrap_or(0),
+            Screen::Settings => SETTINGS_COUNT,
         }
     }
 
@@ -383,6 +400,7 @@ pub async fn run() -> anyhow::Result<()> {
         } else {
             Screen::Login
         },
+        settings_back: Screen::Wave,
         login_token_input: String::new(),
         login_token_editing: false,
         volume_before_mute: config.volume.max(1),
@@ -953,7 +971,7 @@ fn rating_target(app: &App) -> Option<Track> {
             .as_ref()
             .and_then(|list| selected(&list.tracks))
             .or_else(current),
-        Screen::Login => None,
+        Screen::Login | Screen::Settings => None,
     }
 }
 
@@ -1172,7 +1190,7 @@ fn play_current(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
             app.playback_source = PlaybackSource::Other;
             start_audio_load(app, tx);
         }
-        Screen::Login => {}
+        Screen::Login | Screen::Settings => {}
     }
 }
 
@@ -1241,6 +1259,45 @@ fn handle_paste(app: &mut App, text: &str) {
         app.login_token_input = text.trim().to_string();
         app.login_token_editing = !app.login_token_input.is_empty();
         app.status_message = "Токен вставлен. Enter — проверить и войти".into();
+    }
+}
+
+fn toggle_setting(app: &mut App) {
+    match app.selected() {
+        Some(0) => {
+            app.config.theme = app.config.theme.next();
+            let _ = app.config.save();
+            app.status_message = format!("Тема интерфейса: {}", app.config.theme.label());
+        }
+        Some(1) => {
+            app.config.show_hints = !app.config.show_hints;
+            let _ = app.config.save();
+            app.status_message = format!(
+                "Подсказки: {}",
+                if app.config.show_hints {
+                    "включены"
+                } else {
+                    "скрыты"
+                }
+            );
+        }
+        _ => {}
+    }
+}
+
+fn cycle_setting(app: &mut App, forward: bool) {
+    match app.selected() {
+        Some(0) => {
+            app.config.theme = if forward {
+                app.config.theme.next()
+            } else {
+                app.config.theme.prev()
+            };
+            let _ = app.config.save();
+            app.status_message = format!("Тема интерфейса: {}", app.config.theme.label());
+        }
+        Some(1) => toggle_setting(app),
+        _ => {}
     }
 }
 
@@ -1348,6 +1405,25 @@ fn handle_key(
                 app.status_message =
                     "Поиск доступен без входа. Библиотека и волна требуют входа".into();
             }
+            KeyCode::Char('4') | KeyCode::Char(',') => app.open_settings(),
+            KeyCode::Char('q') => app.should_exit = true,
+            _ => {}
+        }
+        return AppAction::None;
+    }
+
+    // --- Экран настроек ---
+    if app.screen == Screen::Settings {
+        match key.code {
+            KeyCode::Esc => {
+                app.screen = app.settings_back;
+                app.reset_selection();
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => toggle_setting(app),
+            KeyCode::Left => cycle_setting(app, false),
+            KeyCode::Right => cycle_setting(app, true),
+            KeyCode::Up => move_selection(app, -1),
+            KeyCode::Down => move_selection(app, 1),
             KeyCode::Char('q') => app.should_exit = true,
             _ => {}
         }
@@ -1399,6 +1475,10 @@ fn handle_key(
             app.reset_selection();
             app.status_message =
                 "Поиск: введите запрос, Enter — искать, Esc — к результатам".into();
+            return AppAction::None;
+        }
+        (KeyCode::Char('4') | KeyCode::Char(','), _) => {
+            app.open_settings();
             return AppAction::None;
         }
         (KeyCode::Char('l') | KeyCode::Char('L'), _) => return AppAction::TriggerLogin,

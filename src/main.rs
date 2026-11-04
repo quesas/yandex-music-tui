@@ -3,6 +3,7 @@ mod app;
 pub mod auth;
 mod config;
 mod player;
+mod theme;
 mod ui;
 
 use anyhow::Context;

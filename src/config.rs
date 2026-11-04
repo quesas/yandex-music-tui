@@ -1,3 +1,4 @@
+use crate::theme::Theme;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -40,6 +41,10 @@ pub struct Config {
     pub audio_quality: Quality,
     /// Громкость 0..=100
     pub volume: u8,
+    /// Тема интерфейса
+    pub theme: Theme,
+    /// Показывать подсказки по клавишам
+    pub show_hints: bool,
 }
 
 impl Default for Config {
@@ -51,6 +56,8 @@ impl Default for Config {
             has_plus: false,
             audio_quality: Quality::default(),
             volume: 70,
+            theme: Theme::default(),
+            show_hints: true,
         }
     }
 }
