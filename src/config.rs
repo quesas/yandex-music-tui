@@ -43,8 +43,6 @@ pub struct Config {
     pub volume: u8,
     /// Тема интерфейса
     pub theme: Theme,
-    /// Показывать подсказки по клавишам
-    pub show_hints: bool,
 }
 
 impl Default for Config {
@@ -57,7 +55,6 @@ impl Default for Config {
             audio_quality: Quality::default(),
             volume: 70,
             theme: Theme::default(),
-            show_hints: true,
         }
     }
 }

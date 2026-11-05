@@ -1,29 +1,20 @@
 use crate::app::App;
 use ratatui::Frame;
-use ratatui::prelude::{Constraint, Direction, Layout, Rect};
+use ratatui::prelude::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let p = app.palette();
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(20),
-            Constraint::Length(15),
-            Constraint::Percentage(20),
-        ])
-        .split(area);
-    let horizontal = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(15),
-            Constraint::Percentage(70),
-            Constraint::Percentage(15),
-        ])
-        .split(vertical[1]);
-    let panel = horizontal[1];
+    let width = area.width.saturating_sub(8).clamp(20, 76).min(area.width);
+    let height = 19.min(area.height);
+    let panel = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
 
     let mut lines = vec![
         Line::from(""),
@@ -41,11 +32,12 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  t      ", Style::new().fg(p.warning)),
-            Span::styled(
-                "вставить токен или адрес кнопки «Открыть приложение»",
-                Style::new().fg(p.fg),
-            ),
+            Span::styled("вставить токен или адрес кнопки", Style::new().fg(p.fg)),
         ]),
+        Line::from(Span::styled(
+            "         «Открыть приложение»",
+            Style::new().fg(p.fg),
+        )),
         Line::from(vec![
             Span::styled("  Esc    ", Style::new().fg(p.warning)),
             Span::styled(
@@ -74,7 +66,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(format!("{masked}█"), Style::new().fg(p.warning)),
         ]));
         lines.push(Line::from(Span::styled(
-            "  Вставьте токен или адрес кнопки «Открыть приложение» (Ctrl+Shift+V), Enter — проверить",
+            "  Вставьте токен или адрес кнопки «Открыть приложение»",
+            Style::new().fg(p.dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  Ctrl+Shift+V — вставить, Enter — проверить",
             Style::new().fg(p.dim),
         )));
     } else {
@@ -97,8 +93,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             .block(
                 Block::new()
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::new().fg(p.border))
-                    .title_style(Style::new().fg(p.fg))
+                    .title_style(Style::new().fg(p.accent).add_modifier(Modifier::BOLD))
                     .title(" Яндекс Музыка "),
             )
             .wrap(Wrap { trim: false }),

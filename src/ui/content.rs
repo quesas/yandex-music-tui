@@ -4,38 +4,35 @@ use ratatui::Frame;
 use ratatui::prelude::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
-    let [content_area, side_area] = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(45), Constraint::Length(30)])
-        .areas(area);
-
     match app.screen {
-        Screen::Search => draw_search(f, app, content_area),
-        Screen::Library => draw_library(f, app, content_area),
-        Screen::Wave => draw_wave(f, app, content_area),
-        Screen::TrackList => draw_track_list(f, app, content_area),
-        Screen::Settings => draw_settings(f, app, content_area),
+        Screen::Search => draw_search(f, app, area),
+        Screen::Library => draw_library(f, app, area),
+        Screen::Wave => draw_wave(f, app, area),
+        Screen::TrackList => draw_track_list(f, app, area),
+        Screen::Settings => draw_settings(f, app, area),
         Screen::Login => {}
     }
+}
 
-    draw_sidebar(f, app, side_area);
+fn panel(title: String, p: crate::theme::Palette) -> Block<'static> {
+    Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(p.border))
+        .title_style(Style::new().fg(p.accent).add_modifier(Modifier::BOLD))
+        .title(title)
 }
 
 fn draw_wave(f: &mut Frame, app: &mut App, area: Rect) {
     let p = app.palette();
-    let title = format!(" Моя волна · {} треков ", app.wave.len());
-    let items = track_items(app, &app.wave);
+    let revealed = app.row_count();
+    let title = format!(" Моя волна · {} из {} ", revealed, app.wave.len());
+    let items = track_items(app, &app.wave[..revealed]);
     let list = List::new(items)
-        .block(
-            Block::new()
-                .borders(Borders::ALL)
-                .border_style(Style::new().fg(p.border))
-                .title_style(Style::new().fg(p.fg))
-                .title(title),
-        )
+        .block(panel(title, p))
         .highlight_style(Style::new().bg(p.highlight_bg).fg(p.highlight_fg))
         .highlight_symbol("");
     f.render_stateful_widget(list, area, &mut app.list_state);
@@ -56,13 +53,7 @@ fn draw_library(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let list = List::new(items)
-        .block(
-            Block::new()
-                .borders(Borders::ALL)
-                .border_style(Style::new().fg(p.border))
-                .title_style(Style::new().fg(p.fg))
-                .title(title),
-        )
+        .block(panel(title, p))
         .highlight_style(Style::new().bg(p.highlight_bg).fg(p.highlight_fg))
         .highlight_symbol("");
     f.render_stateful_widget(list, area, &mut app.list_state);
@@ -70,23 +61,14 @@ fn draw_library(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
     let p = app.palette();
-    let hints_value = if app.config.show_hints {
-        "включены"
-    } else {
-        "скрыты"
-    };
-    let items = vec![
-        setting_item(0, "Тема интерфейса", app.config.theme.label(), p),
-        setting_item(1, "Подсказки", hints_value, p),
-    ];
+    let items = vec![setting_item(
+        0,
+        "Тема интерфейса",
+        app.config.theme.label(),
+        p,
+    )];
     let list = List::new(items)
-        .block(
-            Block::new()
-                .borders(Borders::ALL)
-                .border_style(Style::new().fg(p.border))
-                .title_style(Style::new().fg(p.fg))
-                .title(" Настройки "),
-        )
+        .block(panel(" Настройки ".to_string(), p))
         .highlight_style(Style::new().bg(p.highlight_bg).fg(p.highlight_fg))
         .highlight_symbol("");
     f.render_stateful_widget(list, area, &mut app.list_state);
@@ -136,13 +118,10 @@ fn draw_search(f: &mut Frame, app: &mut App, area: Rect) {
             ),
             Span::styled(input, input_style),
         ]))
-        .block(
-            Block::new()
-                .borders(Borders::ALL)
-                .border_style(Style::new().fg(p.border))
-                .title_style(Style::new().fg(p.fg))
-                .title(format!(" фильтр: {} (Tab) ", app.search.filter.label())),
-        ),
+        .block(panel(
+            format!(" фильтр: {} (Tab) ", app.search.filter.label()),
+            p,
+        )),
         input_area,
     );
 
@@ -153,13 +132,7 @@ fn draw_search(f: &mut Frame, app: &mut App, area: Rect) {
     );
     let items = search_items(&app.search.results, app);
     let list = List::new(items)
-        .block(
-            Block::new()
-                .borders(Borders::ALL)
-                .border_style(Style::new().fg(p.border))
-                .title_style(Style::new().fg(p.fg))
-                .title(title),
-        )
+        .block(panel(title, p))
         .highlight_style(Style::new().bg(p.highlight_bg).fg(p.highlight_fg))
         .highlight_symbol("");
     f.render_stateful_widget(list, list_area, &mut app.list_state);
@@ -178,13 +151,7 @@ fn draw_track_list(f: &mut Frame, app: &mut App, area: Rect) {
         .unwrap_or(&[]);
     let items = track_items(app, tracks);
     let list = List::new(items)
-        .block(
-            Block::new()
-                .borders(Borders::ALL)
-                .border_style(Style::new().fg(p.border))
-                .title_style(Style::new().fg(p.fg))
-                .title(title),
-        )
+        .block(panel(title, p))
         .highlight_style(Style::new().bg(p.highlight_bg).fg(p.highlight_fg))
         .highlight_symbol("");
     f.render_stateful_widget(list, area, &mut app.list_state);
@@ -316,97 +283,4 @@ fn search_items(items: &[crate::api::SearchItem], app: &App) -> Vec<ListItem<'st
             ListItem::new(Line::from(spans))
         })
         .collect()
-}
-
-fn draw_sidebar(f: &mut Frame, app: &App, area: Rect) {
-    let p = app.palette();
-    let account = app.account.clone().unwrap_or_default();
-    let source = match app.screen {
-        Screen::Wave => format!("Волна: {}", app.wave.len()),
-        Screen::Library => format!("Библиотека: {}", app.row_count()),
-        Screen::Search => format!("Поиск: {}", app.search.results.len()),
-        Screen::TrackList => format!("Список: {}", app.row_count()),
-        Screen::Settings => "Настройки".to_string(),
-        Screen::Login => "Вход".to_string(),
-    };
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled("Аккаунт: ", Style::new().fg(p.dim)),
-            Span::styled(account.nickname.clone(), Style::new().fg(p.fg)),
-        ]),
-        Line::from(vec![
-            Span::styled("Плюс: ", Style::new().fg(p.dim)),
-            Span::styled(
-                if account.plus {
-                    "активен"
-                } else {
-                    "нет"
-                },
-                Style::new().fg(p.fg),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Качество: ", Style::new().fg(p.dim)),
-            Span::styled(app.config.audio_quality.label(), Style::new().fg(p.fg)),
-        ]),
-        Line::from(vec![
-            Span::styled("Громкость: ", Style::new().fg(p.dim)),
-            Span::styled(
-                format!("{}%", app.player.engine.volume),
-                Style::new().fg(p.fg),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Токен: ", Style::new().fg(p.dim)),
-            Span::styled(
-                if app.has_token() {
-                    "сохранён"
-                } else {
-                    "нет"
-                },
-                Style::new().fg(p.fg),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            source,
-            Style::new().fg(p.fg).add_modifier(Modifier::BOLD),
-        )),
-    ];
-    if app.config.show_hints {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("1 волна", Style::new().fg(p.dim))));
-        lines.push(Line::from(Span::styled(
-            "2 библиотека",
-            Style::new().fg(p.dim),
-        )));
-        lines.push(Line::from(Span::styled("3 поиск", Style::new().fg(p.dim))));
-        lines.push(Line::from(Span::styled(
-            "4 настройки",
-            Style::new().fg(p.dim),
-        )));
-        lines.push(Line::from(Span::styled(
-            "Tab разделы",
-            Style::new().fg(p.dim),
-        )));
-        lines.push(Line::from(Span::styled(
-            "f лайк · d дизлайк",
-            Style::new().fg(p.dim),
-        )));
-        lines.push(Line::from(Span::styled(
-            "r обновить",
-            Style::new().fg(p.dim),
-        )));
-        lines.push(Line::from(Span::styled("o выйти", Style::new().fg(p.dim))));
-    }
-    f.render_widget(
-        Paragraph::new(lines).block(
-            Block::new()
-                .borders(Borders::ALL)
-                .border_style(Style::new().fg(p.border))
-                .title_style(Style::new().fg(p.fg))
-                .title(" Статус "),
-        ),
-        area,
-    );
 }

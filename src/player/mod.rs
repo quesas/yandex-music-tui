@@ -29,6 +29,19 @@ impl Player {
         );
     }
 
+    /// Заменить очередь, сохранив текущий трек (индекс пересчитывается).
+    pub fn set_queue(
+        &mut self,
+        queue: Vec<crate::api::models::Track>,
+        current: &crate::api::models::Track,
+    ) {
+        self.index = queue
+            .iter()
+            .position(|t| t.id == current.id && t.album_id == current.album_id)
+            .or_else(|| (!queue.is_empty()).then_some(0));
+        self.queue = queue;
+    }
+
     pub fn play_bytes(&mut self, bytes: Vec<u8>) -> Result<(), String> {
         self.engine.play_bytes(bytes)
     }

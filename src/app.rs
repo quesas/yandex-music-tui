@@ -5,6 +5,7 @@ use crate::config::{Config, Quality};
 use crate::player::TrackEnd;
 use crate::ui;
 use anyhow::Context;
+use rand::seq::SliceRandom;
 use ratatui::widgets::ListState;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -17,7 +18,13 @@ const SEEK_STEP: i64 = 5;
 /// Шаг изменения громкости
 const VOLUME_STEP: u8 = 5;
 /// Количество пунктов на экране настроек
-const SETTINGS_COUNT: usize = 2;
+const SETTINGS_COUNT: usize = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmAction {
+    Quit,
+    Logout,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -140,6 +147,8 @@ pub struct App {
     pub account: Option<AccountInfo>,
     pub status_message: String,
     pub should_exit: bool,
+    pub show_help: bool,
+    pub confirm: Option<ConfirmAction>,
 
     pub screen: Screen,
     pub settings_back: Screen,
@@ -148,6 +157,7 @@ pub struct App {
     volume_before_mute: u8,
 
     pub wave: Vec<Track>,
+    pub wave_revealed: usize,
     pub wave_session_id: Option<String>,
     pub wave_batch_id: Option<String>,
     pub wave_queue: Vec<String>,
@@ -186,6 +196,7 @@ impl App {
         self.client = YandexClient::new(None);
         self.account = None;
         self.wave.clear();
+        self.wave_revealed = 0;
         self.wave_session_id = None;
         self.wave_batch_id = None;
         self.wave_queue.clear();
@@ -231,7 +242,7 @@ impl App {
     pub fn row_count(&self) -> usize {
         match self.screen {
             Screen::Login => 0,
-            Screen::Wave => self.wave.len(),
+            Screen::Wave => self.wave_revealed.min(self.wave.len()),
             Screen::Library => match self.library_tab {
                 LibraryTab::Tracks => self.library_tracks.len(),
                 LibraryTab::Artists => self.library_artists.len(),
@@ -263,10 +274,6 @@ impl App {
         } else {
             Some(self.list_state.selected().unwrap_or(0).min(len - 1))
         }
-    }
-
-    pub fn track_source(&self) -> String {
-        format!("{} треков", self.row_count())
     }
 
     pub fn is_liked(&self, track: &Track) -> bool {
@@ -379,6 +386,7 @@ pub async fn run() -> anyhow::Result<()> {
     let mut app = App {
         client: YandexClient::new(initial_token),
         wave: Vec::new(),
+        wave_revealed: 0,
         wave_session_id: None,
         wave_batch_id: None,
         wave_queue: Vec::new(),
@@ -413,6 +421,8 @@ pub async fn run() -> anyhow::Result<()> {
             "Вход: Enter — через Яндекс, t — вставить токен".into()
         },
         should_exit: false,
+        show_help: false,
+        confirm: None,
         config,
         wave_seq: 0,
         library_seq: 0,
@@ -576,6 +586,7 @@ fn handle_api_event(app: &mut App, event: ApiEvent, tx: &mpsc::Sender<ApiEvent>)
                         if app.pending_wave {
                             app.pending_wave = false;
                             if old_len < app.wave.len() {
+                                app.wave_revealed = app.wave_revealed.max(old_len + 1);
                                 app.player.prepare_at(&app.wave, old_len);
                                 app.playback_source = PlaybackSource::Wave;
                                 start_audio_load(app, tx);
@@ -584,6 +595,7 @@ fn handle_api_event(app: &mut App, event: ApiEvent, tx: &mpsc::Sender<ApiEvent>)
                         app.status_message = format!("Моя волна: {} треков", app.wave.len());
                     } else {
                         app.wave = batch.tracks;
+                        app.wave_revealed = usize::from(!app.wave.is_empty());
                         app.status_message =
                             format!("Моя волна загружена: {} треков", app.wave.len());
                         if app.screen == Screen::Wave {
@@ -1144,6 +1156,7 @@ fn play_current(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
         Screen::Wave => {
             app.player.prepare_at(&app.wave, index);
             app.playback_source = PlaybackSource::Wave;
+            app.wave_revealed = app.wave_revealed.max(index + 1).min(app.wave.len());
             start_audio_load(app, tx);
         }
         Screen::Library => match app.library_tab {
@@ -1220,9 +1233,82 @@ fn advance_track(app: &mut App, forward: bool, tx: &mpsc::Sender<ApiEvent>) {
     } else {
         app.player.prev();
     }
+    if app.playback_source == PlaybackSource::Wave
+        && let Some(index) = app.player.index
+    {
+        app.wave_revealed = app.wave_revealed.max(index + 1).min(app.wave.len());
+    }
     if app.player.current_track().is_some() {
         start_audio_load(app, tx);
     }
+}
+
+fn same_track(a: &Track, b: &Track) -> bool {
+    a.id == b.id && a.album_id == b.album_id
+}
+
+fn current_track_list(app: &App) -> Option<&Vec<Track>> {
+    match app.screen {
+        Screen::Wave => Some(&app.wave),
+        Screen::Library if app.library_tab == LibraryTab::Tracks => Some(&app.library_tracks),
+        Screen::TrackList => app.track_list.as_ref().map(|list| &list.tracks),
+        _ => None,
+    }
+}
+
+fn current_track_list_mut(app: &mut App) -> Option<&mut Vec<Track>> {
+    match app.screen {
+        Screen::Wave => Some(&mut app.wave),
+        Screen::Library if app.library_tab == LibraryTab::Tracks => Some(&mut app.library_tracks),
+        Screen::TrackList => app.track_list.as_mut().map(|list| &mut list.tracks),
+        _ => None,
+    }
+}
+
+/// Перемешать треки текущего экрана; если из этого списка сейчас играет
+/// очередь, её порядок тоже синхронизируется с новым списком.
+fn shuffle_tracks(app: &mut App) {
+    let current = app.player.current_track().cloned();
+    let (len, sync_queue) = match current_track_list(app) {
+        Some(tracks) => {
+            let sync_queue = current.is_some()
+                && !app.player.queue.is_empty()
+                && app
+                    .player
+                    .queue
+                    .iter()
+                    .all(|queued| tracks.iter().any(|track| same_track(track, queued)));
+            (tracks.len(), sync_queue)
+        }
+        None => {
+            app.status_message = "Перемешивание доступно в списках треков".into();
+            return;
+        }
+    };
+
+    if len < 2 {
+        app.status_message = "Недостаточно треков для перемешивания".into();
+        return;
+    }
+
+    let shuffled = {
+        let Some(tracks) = current_track_list_mut(app) else {
+            return;
+        };
+        tracks.shuffle(&mut rand::rng());
+        sync_queue.then(|| tracks.clone())
+    };
+
+    if let (Some(queue), Some(current)) = (shuffled, current) {
+        app.player.set_queue(queue, &current);
+        if app.screen == Screen::Wave
+            && let Some(index) = app.player.index
+        {
+            app.wave_revealed = app.wave_revealed.max(index + 1).min(app.wave.len());
+        }
+    }
+
+    app.status_message = format!("Перемешано треков: {len}");
 }
 
 fn on_tick(app: &mut App, dt: Duration, tx: &mpsc::Sender<ApiEvent>) {
@@ -1263,41 +1349,22 @@ fn handle_paste(app: &mut App, text: &str) {
 }
 
 fn toggle_setting(app: &mut App) {
-    match app.selected() {
-        Some(0) => {
-            app.config.theme = app.config.theme.next();
-            let _ = app.config.save();
-            app.status_message = format!("Тема интерфейса: {}", app.config.theme.label());
-        }
-        Some(1) => {
-            app.config.show_hints = !app.config.show_hints;
-            let _ = app.config.save();
-            app.status_message = format!(
-                "Подсказки: {}",
-                if app.config.show_hints {
-                    "включены"
-                } else {
-                    "скрыты"
-                }
-            );
-        }
-        _ => {}
+    if let Some(0) = app.selected() {
+        app.config.theme = app.config.theme.next();
+        let _ = app.config.save();
+        app.status_message = format!("Тема интерфейса: {}", app.config.theme.label());
     }
 }
 
 fn cycle_setting(app: &mut App, forward: bool) {
-    match app.selected() {
-        Some(0) => {
-            app.config.theme = if forward {
-                app.config.theme.next()
-            } else {
-                app.config.theme.prev()
-            };
-            let _ = app.config.save();
-            app.status_message = format!("Тема интерфейса: {}", app.config.theme.label());
-        }
-        Some(1) => toggle_setting(app),
-        _ => {}
+    if let Some(0) = app.selected() {
+        app.config.theme = if forward {
+            app.config.theme.next()
+        } else {
+            app.config.theme.prev()
+        };
+        let _ = app.config.save();
+        app.status_message = format!("Тема интерфейса: {}", app.config.theme.label());
     }
 }
 
@@ -1315,6 +1382,35 @@ fn handle_key(
 
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         app.should_exit = true;
+        return AppAction::None;
+    }
+
+    if let Some(action) = app.confirm {
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                app.confirm = None;
+                match action {
+                    ConfirmAction::Quit => app.should_exit = true,
+                    ConfirmAction::Logout => return AppAction::Logout,
+                }
+            }
+            KeyCode::Esc
+            | KeyCode::Char('n')
+            | KeyCode::Char('N')
+            | KeyCode::Char('q')
+            | KeyCode::Char('Q') => {
+                app.confirm = None;
+                app.status_message = "Действие отменено".into();
+            }
+            _ => {}
+        }
+        return AppAction::None;
+    }
+
+    if app.show_help {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
+            app.show_help = false;
+        }
         return AppAction::None;
     }
 
@@ -1387,9 +1483,23 @@ fn handle_key(
         return AppAction::None;
     }
 
+    // --- Меню подсказок по клавишам ---
+    if key.code == KeyCode::Char('?') {
+        app.show_help = true;
+        return AppAction::None;
+    }
+
     // --- Экран входа без ввода токена ---
     if app.screen == Screen::Login {
         match key.code {
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                adjust_volume(app, VOLUME_STEP as i16)
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                adjust_volume(app, -(VOLUME_STEP as i16))
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => adjust_volume(app, 1),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => adjust_volume(app, -1),
             KeyCode::Enter => return AppAction::TriggerLogin,
             KeyCode::Char('l') | KeyCode::Char('L') => return AppAction::TriggerLogin,
             KeyCode::Char('t') | KeyCode::Char('T') => {
@@ -1406,7 +1516,7 @@ fn handle_key(
                     "Поиск доступен без входа. Библиотека и волна требуют входа".into();
             }
             KeyCode::Char('4') | KeyCode::Char(',') => app.open_settings(),
-            KeyCode::Char('q') => app.should_exit = true,
+            KeyCode::Char('q') | KeyCode::Char('Q') => app.confirm = Some(ConfirmAction::Quit),
             _ => {}
         }
         return AppAction::None;
@@ -1415,6 +1525,14 @@ fn handle_key(
     // --- Экран настроек ---
     if app.screen == Screen::Settings {
         match key.code {
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                adjust_volume(app, VOLUME_STEP as i16)
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                adjust_volume(app, -(VOLUME_STEP as i16))
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => adjust_volume(app, 1),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => adjust_volume(app, -1),
             KeyCode::Esc => {
                 app.screen = app.settings_back;
                 app.reset_selection();
@@ -1424,7 +1542,7 @@ fn handle_key(
             KeyCode::Right => cycle_setting(app, true),
             KeyCode::Up => move_selection(app, -1),
             KeyCode::Down => move_selection(app, 1),
-            KeyCode::Char('q') => app.should_exit = true,
+            KeyCode::Char('q') | KeyCode::Char('Q') => app.confirm = Some(ConfirmAction::Quit),
             _ => {}
         }
         return AppAction::None;
@@ -1433,7 +1551,7 @@ fn handle_key(
     // --- Глобальные клавиши ---
     match (key.code, key.modifiers) {
         (KeyCode::Char('q'), _) => {
-            app.should_exit = true;
+            app.confirm = Some(ConfirmAction::Quit);
             return AppAction::None;
         }
         (KeyCode::Char('1'), _) => {
@@ -1482,7 +1600,10 @@ fn handle_key(
             return AppAction::None;
         }
         (KeyCode::Char('l') | KeyCode::Char('L'), _) => return AppAction::TriggerLogin,
-        (KeyCode::Char('o') | KeyCode::Char('O'), _) => return AppAction::Logout,
+        (KeyCode::Char('o') | KeyCode::Char('O'), _) => {
+            app.confirm = Some(ConfirmAction::Logout);
+            return AppAction::None;
+        }
         (KeyCode::Char('f') | KeyCode::Char('F'), _) => toggle_like(app, tx),
         (KeyCode::Char('d') | KeyCode::Char('D'), _) => toggle_dislike(app, tx),
         _ => {}
@@ -1519,6 +1640,8 @@ fn handle_key(
         KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
             adjust_volume(app, -(VOLUME_STEP as i16))
         }
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => adjust_volume(app, 1),
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => adjust_volume(app, -1),
         KeyCode::Up => move_selection(app, -1),
         KeyCode::Down => move_selection(app, 1),
         KeyCode::PageUp => move_selection(app, -10),
@@ -1609,6 +1732,7 @@ fn handle_key(
                 Err(e) => app.status_message = format!("Ошибка сохранения: {e}"),
             }
         }
+        KeyCode::Char('s') | KeyCode::Char('S') => shuffle_tracks(app),
         KeyCode::Char('r') => match app.screen {
             Screen::Wave => start_wave_load(app, tx, false),
             Screen::Library => {

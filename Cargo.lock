@@ -3908,6 +3908,7 @@ dependencies = [
  "anyhow",
  "crossterm",
  "dirs",
+ "rand 0.10.3",
  "ratatui",
  "reqwest",
  "rodio",
