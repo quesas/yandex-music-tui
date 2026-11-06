@@ -39,7 +39,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Screen::Wave => Some(0),
         Screen::Library => Some(1),
         Screen::Search | Screen::TrackList => Some(2),
-        Screen::Settings => Some(3),
+        Screen::Settings | Screen::WaveSetup => Some(3),
         Screen::Login => None,
     };
     let items = [

@@ -1,5 +1,6 @@
 use crate::api::{
-    AccountInfo, Album, Artist, Playlist, SearchFilter, SearchItem, Track, WaveBatch, YandexClient,
+    AccountInfo, Album, Artist, Playlist, SearchFilter, SearchItem, Track, WaveBatch, WaveSettings,
+    YandexClient,
 };
 use crate::config::{Config, Quality};
 use crate::player::TrackEnd;
@@ -18,7 +19,7 @@ const SEEK_STEP: i64 = 5;
 /// Шаг изменения громкости
 const VOLUME_STEP: u8 = 5;
 /// Количество пунктов на экране настроек
-const SETTINGS_COUNT: usize = 1;
+const SETTINGS_COUNT: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
@@ -34,6 +35,7 @@ pub enum Screen {
     Search,
     TrackList,
     Settings,
+    WaveSetup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +165,9 @@ pub struct App {
     pub wave_queue: Vec<String>,
     pub wave_loading: bool,
     pub pending_wave: bool,
+    pub wave_settings: Option<WaveSettings>,
+    pub wave_settings_loading: bool,
+    pub wave_prefs_dirty: bool,
 
     pub library_tab: LibraryTab,
     pub library_tracks: Vec<Track>,
@@ -186,6 +191,7 @@ pub struct App {
     audio_seq: u64,
     ratings_seq: u64,
     rating_seq: u64,
+    wave_settings_seq: u64,
 }
 
 impl App {
@@ -208,6 +214,9 @@ impl App {
         self.disliked_ids.clear();
         self.ratings_loaded = false;
         self.pending_wave = false;
+        self.wave_settings = None;
+        self.wave_settings_loading = false;
+        self.wave_prefs_dirty = false;
         self.player.stop();
         self.audio_seq += 1;
         self.tracklist_seq += 1;
@@ -255,6 +264,14 @@ impl App {
                 .map(|list| list.tracks.len())
                 .unwrap_or(0),
             Screen::Settings => SETTINGS_COUNT,
+            Screen::WaveSetup => self.wave_setup_len(),
+        }
+    }
+
+    fn wave_setup_len(&self) -> usize {
+        match &self.wave_settings {
+            Some(settings) => 1 + settings.groups.len() + 1,
+            None => 1,
         }
     }
 
@@ -338,6 +355,10 @@ enum ApiEvent {
         append: bool,
         seq: u64,
     },
+    WaveSettings {
+        result: Result<WaveSettings, String>,
+        seq: u64,
+    },
     Library {
         result: Result<LibraryData, String>,
         tab: LibraryTab,
@@ -392,6 +413,9 @@ pub async fn run() -> anyhow::Result<()> {
         wave_queue: Vec::new(),
         wave_loading: false,
         pending_wave: false,
+        wave_settings: None,
+        wave_settings_loading: false,
+        wave_prefs_dirty: false,
         library_tab: LibraryTab::Tracks,
         library_tracks: Vec::new(),
         library_artists: Vec::new(),
@@ -431,6 +455,7 @@ pub async fn run() -> anyhow::Result<()> {
         audio_seq: 0,
         ratings_seq: 0,
         rating_seq: 0,
+        wave_settings_seq: 0,
     };
     app.player.engine.volume = app.config.volume;
     app.volume_before_mute = app.config.volume.max(1);
@@ -609,6 +634,29 @@ fn handle_api_event(app: &mut App, event: ApiEvent, tx: &mpsc::Sender<ApiEvent>)
                         app.status_message = format!("Ошибка волны: {e}");
                     }
                 }
+            }
+        }
+        ApiEvent::WaveSettings { result, seq } => {
+            if seq != app.wave_settings_seq {
+                return;
+            }
+            app.wave_settings_loading = false;
+            match result {
+                Ok(settings) => {
+                    app.wave_settings = Some(settings);
+                    app.status_message = "Настройки волны загружены".into();
+                }
+                Err(e) => {
+                    app.wave_settings = Some(WaveSettings::fallback());
+                    if !handle_session_error(app, &e) {
+                        app.status_message = format!(
+                            "Не удалось загрузить настройки волны, используются стандартные: {e}"
+                        );
+                    }
+                }
+            }
+            if app.screen == Screen::WaveSetup {
+                app.reset_selection();
             }
         }
         ApiEvent::Library { result, tab, seq } => {
@@ -853,6 +901,162 @@ fn spawn_account(tx: mpsc::Sender<ApiEvent>, client: YandexClient, explicit_logi
     });
 }
 
+/// Сиды для новой сессии «Моей волны» с учётом выбранных настроек.
+fn wave_seeds(app: &App) -> Vec<String> {
+    let context = app
+        .config
+        .wave_context
+        .as_deref()
+        .filter(|seed| !seed.is_empty());
+
+    let mut seeds = vec![context.unwrap_or("user:onyourwave").to_string()];
+    let mut settings: Vec<(&String, &String)> = app.config.wave_settings.iter().collect();
+    settings.sort_by_key(|(key, _)| match key.as_str() {
+        "moodEnergy" => 0,
+        "language" => 1,
+        "diversity" => 2,
+        _ => 3,
+    });
+    for (_, seed) in settings {
+        if !seed.is_empty() && !seeds.contains(seed) {
+            seeds.push(seed.clone());
+        }
+    }
+
+    if context.is_none() && seeds.len() == 1 {
+        seeds.clear();
+    }
+    seeds
+}
+
+fn wave_context_label(app: &App) -> String {
+    let Some(seed) = app.config.wave_context.as_deref() else {
+        return "Моя волна".to_string();
+    };
+    app.wave_settings
+        .as_ref()
+        .and_then(|settings| {
+            settings
+                .contexts
+                .iter()
+                .find(|context| context.seed == seed)
+        })
+        .map(|context| context.name.clone())
+        .unwrap_or_else(|| seed.to_string())
+}
+
+fn load_wave_settings(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
+    if app.wave_settings.is_some() || app.wave_settings_loading {
+        return;
+    }
+    if !app.ensure_login() {
+        return;
+    }
+
+    app.wave_settings_seq += 1;
+    let seq = app.wave_settings_seq;
+    let client = app.client.clone();
+    let tx = tx.clone();
+    app.wave_settings_loading = true;
+    app.status_message = "Загружаем настройки волны...".into();
+
+    tokio::spawn(async move {
+        let result = client.wave_settings().await.map_err(|e| e.to_string());
+        let _ = tx.send(ApiEvent::WaveSettings { result, seq }).await;
+    });
+}
+
+fn open_wave_setup(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
+    if !app.ensure_login() {
+        return;
+    }
+    app.screen = Screen::WaveSetup;
+    app.wave_prefs_dirty = false;
+    app.reset_selection();
+    load_wave_settings(app, tx);
+    app.status_message = "Настройки волны: ←/→ — значение, Enter — применить, Esc — назад".into();
+}
+
+fn cycle_wave_setup(app: &mut App, forward: bool) {
+    let Some(settings) = app.wave_settings.clone() else {
+        return;
+    };
+    let Some(index) = app.selected() else {
+        return;
+    };
+
+    if index == 0 {
+        let mut contexts = vec![None];
+        contexts.extend(
+            settings
+                .contexts
+                .iter()
+                .map(|context| Some(context.seed.clone())),
+        );
+        let current = app.config.wave_context.clone();
+        let position = contexts
+            .iter()
+            .position(|context| *context == current)
+            .unwrap_or(0);
+        let next = if forward {
+            (position + 1) % contexts.len()
+        } else {
+            (position + contexts.len() - 1) % contexts.len()
+        };
+        app.config.wave_context = contexts[next].clone();
+        app.wave_prefs_dirty = true;
+        let _ = app.config.save();
+        app.status_message = format!("Волна: {}", wave_context_label(app));
+        return;
+    }
+
+    let Some(group) = settings.groups.get(index - 1) else {
+        return;
+    };
+    let current = app
+        .config
+        .wave_settings
+        .get(&group.key)
+        .cloned()
+        .filter(|seed| !seed.is_empty());
+    let current_position = group.values.iter().position(|value| value.seed == current);
+    let next = match current_position {
+        Some(position) if forward => (position + 1) % group.values.len(),
+        Some(position) => (position + group.values.len() - 1) % group.values.len(),
+        None if forward => 0,
+        None => group.values.len() - 1,
+    };
+    let value = &group.values[next];
+    match &value.seed {
+        Some(seed) => {
+            app.config
+                .wave_settings
+                .insert(group.key.clone(), seed.clone());
+        }
+        None => {
+            app.config.wave_settings.remove(&group.key);
+        }
+    }
+    app.wave_prefs_dirty = true;
+    let _ = app.config.save();
+    app.status_message = format!("{}: {}", group.name, value.name);
+}
+
+fn restart_wave(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
+    app.wave_seq += 1;
+    app.audio_seq += 1;
+    app.wave_loading = false;
+    app.pending_wave = false;
+    app.wave_session_id = None;
+    app.wave_batch_id = None;
+    app.wave_queue.clear();
+    app.wave_revealed = 0;
+    app.wave.clear();
+    app.player.stop();
+    let _ = app.config.save();
+    start_wave_load(app, tx, false);
+}
+
 fn start_wave_load(app: &mut App, tx: &mpsc::Sender<ApiEvent>, append: bool) {
     if !app.has_token() {
         app.pending_wave = false;
@@ -870,6 +1074,7 @@ fn start_wave_load(app: &mut App, tx: &mpsc::Sender<ApiEvent>, append: bool) {
     let tx = tx.clone();
     let session_id = app.wave_session_id.clone();
     let queue = app.wave_queue.clone();
+    let seeds = wave_seeds(app);
     app.wave_loading = true;
     if !append {
         app.pending_wave = false;
@@ -884,10 +1089,10 @@ fn start_wave_load(app: &mut App, tx: &mpsc::Sender<ApiEvent>, append: bool) {
         let result = if append {
             match session_id {
                 Some(session) => client.next_wave(&session, &queue).await,
-                None => client.start_wave().await,
+                None => client.start_wave(&seeds).await,
             }
         } else {
-            client.start_wave().await
+            client.start_wave(&seeds).await
         };
         let _ = tx
             .send(ApiEvent::Wave {
@@ -983,7 +1188,7 @@ fn rating_target(app: &App) -> Option<Track> {
             .as_ref()
             .and_then(|list| selected(&list.tracks))
             .or_else(current),
-        Screen::Login | Screen::Settings => None,
+        Screen::Login | Screen::Settings | Screen::WaveSetup => None,
     }
 }
 
@@ -1203,7 +1408,7 @@ fn play_current(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
             app.playback_source = PlaybackSource::Other;
             start_audio_load(app, tx);
         }
-        Screen::Login | Screen::Settings => {}
+        Screen::Login | Screen::Settings | Screen::WaveSetup => {}
     }
 }
 
@@ -1215,16 +1420,36 @@ fn start_audio_load(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
     app.audio_seq += 1;
     let seq = app.audio_seq;
     let client = app.client.clone();
+    let quality = app.config.audio_quality;
     let tx = tx.clone();
     app.status_message = format!("Загружаем аудио: {} — {}...", track.artist, track.title);
 
     tokio::spawn(async move {
         let result = client
-            .track_audio(&track.id)
+            .track_audio(&track.id, quality)
             .await
             .map_err(|e| e.to_string());
         let _ = tx.send(ApiEvent::Audio { result, seq }).await;
     });
+}
+
+fn apply_quality(app: &mut App, quality: Quality, tx: &mpsc::Sender<ApiEvent>) {
+    app.config.audio_quality = quality;
+    let _ = app.config.save();
+    app.status_message = format!("Качество: {}", quality.label());
+    if app.player.current_track().is_some() {
+        start_audio_load(app, tx);
+        app.status_message = format!("Качество: {} · перезагружаем трек", quality.label());
+    }
+}
+
+fn cycle_quality(app: &mut App, forward: bool, tx: &mpsc::Sender<ApiEvent>) {
+    let quality = if forward {
+        app.config.audio_quality.next()
+    } else {
+        app.config.audio_quality.prev()
+    };
+    apply_quality(app, quality, tx);
 }
 
 fn advance_track(app: &mut App, forward: bool, tx: &mpsc::Sender<ApiEvent>) {
@@ -1348,23 +1573,31 @@ fn handle_paste(app: &mut App, text: &str) {
     }
 }
 
-fn toggle_setting(app: &mut App) {
-    if let Some(0) = app.selected() {
-        app.config.theme = app.config.theme.next();
-        let _ = app.config.save();
-        app.status_message = format!("Тема интерфейса: {}", app.config.theme.label());
+fn toggle_setting(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
+    match app.selected() {
+        Some(0) => {
+            app.config.theme = app.config.theme.next();
+            let _ = app.config.save();
+            app.status_message = format!("Тема интерфейса: {}", app.config.theme.label());
+        }
+        Some(1) => cycle_quality(app, true, tx),
+        _ => {}
     }
 }
 
-fn cycle_setting(app: &mut App, forward: bool) {
-    if let Some(0) = app.selected() {
-        app.config.theme = if forward {
-            app.config.theme.next()
-        } else {
-            app.config.theme.prev()
-        };
-        let _ = app.config.save();
-        app.status_message = format!("Тема интерфейса: {}", app.config.theme.label());
+fn cycle_setting(app: &mut App, forward: bool, tx: &mpsc::Sender<ApiEvent>) {
+    match app.selected() {
+        Some(0) => {
+            app.config.theme = if forward {
+                app.config.theme.next()
+            } else {
+                app.config.theme.prev()
+            };
+            let _ = app.config.save();
+            app.status_message = format!("Тема интерфейса: {}", app.config.theme.label());
+        }
+        Some(1) => cycle_quality(app, forward, tx),
+        _ => {}
     }
 }
 
@@ -1537,11 +1770,69 @@ fn handle_key(
                 app.screen = app.settings_back;
                 app.reset_selection();
             }
-            KeyCode::Enter | KeyCode::Char(' ') => toggle_setting(app),
-            KeyCode::Left => cycle_setting(app, false),
-            KeyCode::Right => cycle_setting(app, true),
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if app.selected() == Some(2) {
+                    open_wave_setup(app, tx);
+                } else {
+                    toggle_setting(app, tx);
+                }
+            }
+            KeyCode::Left => cycle_setting(app, false, tx),
+            KeyCode::Right => cycle_setting(app, true, tx),
             KeyCode::Up => move_selection(app, -1),
             KeyCode::Down => move_selection(app, 1),
+            KeyCode::Char('w') | KeyCode::Char('W') => open_wave_setup(app, tx),
+            KeyCode::Char('q') | KeyCode::Char('Q') => app.confirm = Some(ConfirmAction::Quit),
+            _ => {}
+        }
+        return AppAction::None;
+    }
+
+    // --- Настройки «Моей волны» ---
+    if app.screen == Screen::WaveSetup {
+        let action_row = app.wave_setup_len().saturating_sub(1);
+        match key.code {
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                adjust_volume(app, VOLUME_STEP as i16)
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                adjust_volume(app, -(VOLUME_STEP as i16))
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => adjust_volume(app, 1),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => adjust_volume(app, -1),
+            KeyCode::Esc => {
+                let dirty = app.wave_prefs_dirty;
+                app.wave_prefs_dirty = false;
+                app.screen = Screen::Wave;
+                app.reset_selection();
+                if dirty {
+                    restart_wave(app, tx);
+                }
+            }
+            KeyCode::Enter => {
+                if app.selected() == Some(action_row) {
+                    app.wave_prefs_dirty = false;
+                    app.screen = Screen::Wave;
+                    app.reset_selection();
+                    restart_wave(app, tx);
+                } else {
+                    cycle_wave_setup(app, true);
+                }
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                app.wave_prefs_dirty = false;
+                app.screen = Screen::Wave;
+                app.reset_selection();
+                restart_wave(app, tx);
+            }
+            KeyCode::Left => cycle_wave_setup(app, false),
+            KeyCode::Right => cycle_wave_setup(app, true),
+            KeyCode::Up => move_selection(app, -1),
+            KeyCode::Down => move_selection(app, 1),
+            KeyCode::Char('w') | KeyCode::Char('W') => {
+                app.screen = Screen::Wave;
+                app.reset_selection();
+            }
             KeyCode::Char('q') | KeyCode::Char('Q') => app.confirm = Some(ConfirmAction::Quit),
             _ => {}
         }
@@ -1597,6 +1888,10 @@ fn handle_key(
         }
         (KeyCode::Char('4') | KeyCode::Char(','), _) => {
             app.open_settings();
+            return AppAction::None;
+        }
+        (KeyCode::Char('w') | KeyCode::Char('W'), _) => {
+            open_wave_setup(app, tx);
             return AppAction::None;
         }
         (KeyCode::Char('l') | KeyCode::Char('L'), _) => return AppAction::TriggerLogin,
@@ -1713,16 +2008,7 @@ fn handle_key(
             adjust_volume(app, -(VOLUME_STEP as i16))
         }
         KeyCode::Char('m') => toggle_mute(app),
-        KeyCode::Char('~') => {
-            let q = match app.config.audio_quality {
-                Quality::Lossless => Quality::High,
-                Quality::High => Quality::Medium,
-                Quality::Medium => Quality::Low,
-                Quality::Low => Quality::Lossless,
-            };
-            app.config.audio_quality = q;
-            app.status_message = format!("Качество: {}", q.label());
-        }
+        KeyCode::Char('~') => cycle_quality(app, true, tx),
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.config.volume = app.player.engine.volume;
             match app.config.save() {

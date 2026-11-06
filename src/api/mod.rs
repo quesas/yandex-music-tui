@@ -2,8 +2,9 @@ pub mod models;
 pub mod wave;
 
 pub use models::{Album, Artist, Playlist, SearchFilter, SearchItem, Track};
-pub use wave::WaveBatch;
+pub use wave::{WaveBatch, WaveSettingGroup, WaveSettings};
 
+use crate::config::Quality;
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -250,7 +251,7 @@ impl YandexClient {
     ///
     /// `download-info` возвращает список вариантов, а сам `downloadInfoUrl` —
     /// XML с host/path/ts/s, из которых собирается ссылка `/get-mp3/...`.
-    pub async fn track_audio_url(&self, track_id: &str) -> Result<String> {
+    pub async fn track_audio_url(&self, track_id: &str, quality: Quality) -> Result<String> {
         let body = self
             .get_json(&format!("tracks/{track_id}/download-info"), &[])
             .await?;
@@ -260,30 +261,12 @@ impl YandexClient {
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("download-info вернул не список вариантов"))?;
 
-        let best = variants
-            .iter()
-            .filter(|item| {
-                !item
-                    .get("preview")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-            })
-            .filter_map(|item| {
-                let codec = item.get("codec").and_then(Value::as_str).unwrap_or("");
-                let bitrate = item
-                    .get("bitrateInKbps")
-                    .or_else(|| item.get("bitrate"))
-                    .and_then(value_u64)
-                    .unwrap_or(0);
-                let url = item.get("downloadInfoUrl").and_then(Value::as_str)?;
-                Some((codec == "flac", bitrate, url))
-            })
-            .max_by_key(|(lossless, bitrate, _)| (*lossless, *bitrate))
+        let best = select_audio_variant(variants, quality)
             .ok_or_else(|| anyhow::anyhow!("Яндекс Музыка не предложила аудио для трека"))?;
 
         let info = self
             .http
-            .get(best.2)
+            .get(best.url)
             .header(reqwest::header::USER_AGENT, USER_AGENT)
             .send()
             .await?;
@@ -303,8 +286,8 @@ impl YandexClient {
     }
 
     /// Скачать аудиофайл трека в память.
-    pub async fn track_audio(&self, track_id: &str) -> Result<Vec<u8>> {
-        let url = self.track_audio_url(track_id).await?;
+    pub async fn track_audio(&self, track_id: &str, quality: Quality) -> Result<Vec<u8>> {
+        let url = self.track_audio_url(track_id, quality).await?;
         let resp = self
             .http
             .get(url)
@@ -418,10 +401,32 @@ impl YandexClient {
         Ok(items)
     }
 
+    /// Настройки «Моей волны»: занятия и доступные значения настроек.
+    pub async fn wave_settings(&self) -> Result<WaveSettings> {
+        let body = self
+            .get_json(
+                "rotor/wave/settings",
+                &[("seeds", "user:onyourwave".to_string())],
+            )
+            .await?;
+        Ok(WaveSettings::from_response(&body))
+    }
+
     /// Первая порция «Моей волны» через /rotor/session/new.
-    pub async fn start_wave(&self) -> Result<WaveBatch> {
+    ///
+    /// `seeds` — готовые сиды сессии. Пустой список означает обычную
+    /// «Мою волну» без дополнительных настроек.
+    pub async fn start_wave(&self, seeds: &[String]) -> Result<WaveBatch> {
+        let attempts = if seeds.is_empty() {
+            vec![
+                vec!["myVibe".to_string()],
+                vec!["user:onyourwave".to_string()],
+            ]
+        } else {
+            vec![seeds.to_vec()]
+        };
         let mut last_error = None;
-        for seeds in [vec!["myVibe"], vec!["user:onyourwave"]] {
+        for seeds in attempts {
             let body = serde_json::json!({
                 "queue": [],
                 "seeds": seeds,
@@ -535,6 +540,78 @@ fn value_u64(value: &Value) -> Option<u64> {
     value
         .as_u64()
         .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+}
+
+struct AudioVariant<'a> {
+    codec: &'a str,
+    bitrate: u64,
+    url: &'a str,
+}
+
+impl AudioVariant<'_> {
+    fn is_lossless(&self) -> bool {
+        self.codec.eq_ignore_ascii_case("flac")
+    }
+}
+
+/// Выбрать вариант из ответа `download-info` под желаемое качество.
+///
+/// Если запрошенного варианта нет (например, без Яндекс Плюса нет FLAC),
+/// берётся ближайший доступный, чтобы воспроизведение не ломалось.
+fn select_audio_variant<'a>(variants: &'a [Value], quality: Quality) -> Option<AudioVariant<'a>> {
+    let parsed: Vec<_> = variants
+        .iter()
+        .filter(|item| {
+            !item
+                .get("preview")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .filter_map(|item| {
+            let url = item.get("downloadInfoUrl").and_then(Value::as_str)?;
+            let codec = item.get("codec").and_then(Value::as_str).unwrap_or("");
+            let bitrate = item
+                .get("bitrateInKbps")
+                .or_else(|| item.get("bitrate"))
+                .and_then(value_u64)
+                .unwrap_or(0);
+            Some(AudioVariant {
+                codec,
+                bitrate,
+                url,
+            })
+        })
+        .collect();
+
+    let (lossless, lossy): (Vec<_>, Vec<_>) =
+        parsed.into_iter().partition(AudioVariant::is_lossless);
+
+    match quality {
+        Quality::Lossless => max_by_bitrate(lossless).or_else(|| max_by_bitrate(lossy)),
+        Quality::High => {
+            closest_by_bitrate(lossy, 320).or_else(|| closest_by_bitrate(lossless, 320))
+        }
+        Quality::Medium => {
+            closest_by_bitrate(lossy, 192).or_else(|| closest_by_bitrate(lossless, 192))
+        }
+        Quality::Low => closest_by_bitrate(lossy, 64).or_else(|| closest_by_bitrate(lossless, 64)),
+    }
+}
+
+fn max_by_bitrate<'a>(variants: Vec<AudioVariant<'a>>) -> Option<AudioVariant<'a>> {
+    variants.into_iter().max_by_key(|variant| variant.bitrate)
+}
+
+fn closest_by_bitrate<'a>(
+    variants: Vec<AudioVariant<'a>>,
+    target: u64,
+) -> Option<AudioVariant<'a>> {
+    variants.into_iter().min_by_key(|variant| {
+        (
+            variant.bitrate.abs_diff(target),
+            std::cmp::Reverse(variant.bitrate),
+        )
+    })
 }
 
 fn artists_names(value: Option<&Value>) -> String {
@@ -733,6 +810,43 @@ mod tests {
         assert_eq!(xml_value(xml, "ts").as_deref(), Some("123"));
         assert_eq!(xml_value(xml, "s").as_deref(), Some("sig"));
         assert_eq!(xml_value(xml, "missing"), None);
+    }
+
+    #[test]
+    fn selects_audio_variant_by_quality() {
+        let variants = vec![
+            serde_json::json!({"codec": "flac", "bitrateInKbps": 900, "downloadInfoUrl": "flac"}),
+            serde_json::json!({"codec": "mp3", "bitrateInKbps": 320, "downloadInfoUrl": "mp3-320"}),
+            serde_json::json!({"codec": "aac", "bitrateInKbps": 192, "downloadInfoUrl": "aac-192"}),
+            serde_json::json!({"codec": "aac", "bitrateInKbps": 64, "downloadInfoUrl": "aac-64"}),
+            serde_json::json!({
+                "codec": "flac",
+                "bitrateInKbps": 900,
+                "preview": true,
+                "downloadInfoUrl": "preview"
+            }),
+        ];
+
+        let pick = |quality| select_audio_variant(&variants, quality).unwrap().url;
+        assert_eq!(pick(Quality::Lossless), "flac");
+        assert_eq!(pick(Quality::High), "mp3-320");
+        assert_eq!(pick(Quality::Medium), "aac-192");
+        assert_eq!(pick(Quality::Low), "aac-64");
+    }
+
+    #[test]
+    fn falls_back_to_best_available_quality() {
+        let variants = vec![
+            serde_json::json!({"codec": "mp3", "bitrateInKbps": 320, "downloadInfoUrl": "mp3-320"}),
+            serde_json::json!({"codec": "aac", "bitrateInKbps": 64, "downloadInfoUrl": "aac-64"}),
+        ];
+
+        assert_eq!(
+            select_audio_variant(&variants, Quality::Lossless)
+                .unwrap()
+                .url,
+            "mp3-320"
+        );
     }
 
     #[test]

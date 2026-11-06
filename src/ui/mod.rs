@@ -103,6 +103,7 @@ fn screen_name(screen: Screen) -> &'static str {
         Screen::Search => "Поиск",
         Screen::TrackList => "Треки",
         Screen::Settings => "Настройки",
+        Screen::WaveSetup => "Настройки волны",
     }
 }
 

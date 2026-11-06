@@ -13,6 +13,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         Screen::Wave => draw_wave(f, app, area),
         Screen::TrackList => draw_track_list(f, app, area),
         Screen::Settings => draw_settings(f, app, area),
+        Screen::WaveSetup => draw_wave_setup(f, app, area),
         Screen::Login => {}
     }
 }
@@ -29,7 +30,15 @@ fn panel(title: String, p: crate::theme::Palette) -> Block<'static> {
 fn draw_wave(f: &mut Frame, app: &mut App, area: Rect) {
     let p = app.palette();
     let revealed = app.row_count();
-    let title = format!(" Моя волна · {} из {} ", revealed, app.wave.len());
+    let title = if area.width >= 60 {
+        format!(
+            " Моя волна · {} из {} · w — настроить ",
+            revealed,
+            app.wave.len()
+        )
+    } else {
+        format!(" Моя волна · {} из {} ", revealed, app.wave.len())
+    };
     let items = track_items(app, &app.wave[..revealed]);
     let list = List::new(items)
         .block(panel(title, p))
@@ -61,17 +70,99 @@ fn draw_library(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
     let p = app.palette();
-    let items = vec![setting_item(
-        0,
-        "Тема интерфейса",
-        app.config.theme.label(),
-        p,
-    )];
+    let items = vec![
+        setting_item(0, "Тема интерфейса", app.config.theme.label(), p),
+        setting_item(
+            1,
+            "Качество по умолчанию",
+            app.config.audio_quality.label(),
+            p,
+        ),
+        setting_item(2, "Настройки Моей волны", "w", p),
+    ];
     let list = List::new(items)
         .block(panel(" Настройки ".to_string(), p))
         .highlight_style(Style::new().bg(p.highlight_bg).fg(p.highlight_fg))
         .highlight_symbol("");
     f.render_stateful_widget(list, area, &mut app.list_state);
+}
+
+fn draw_wave_setup(f: &mut Frame, app: &mut App, area: Rect) {
+    let p = app.palette();
+    let items = match &app.wave_settings {
+        Some(settings) => {
+            let mut items = vec![setting_item(
+                0,
+                "Волна / занятие",
+                &wave_context_label(app),
+                p,
+            )];
+            for (index, group) in settings.groups.iter().enumerate() {
+                items.push(setting_item(
+                    index + 1,
+                    &group.name,
+                    &wave_group_value_label(app, group),
+                    p,
+                ));
+            }
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled("     ", Style::new()),
+                Span::styled(
+                    "Применить и перезапустить волну",
+                    Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+                ),
+            ])));
+            items
+        }
+        None => vec![ListItem::new(Line::from(Span::styled(
+            " Загружаем настройки волны...",
+            Style::new().fg(p.dim),
+        )))],
+    };
+    let list = List::new(items)
+        .block(panel(" Настройки Моей волны ".to_string(), p))
+        .highlight_style(Style::new().bg(p.highlight_bg).fg(p.highlight_fg))
+        .highlight_symbol("");
+    f.render_stateful_widget(list, area, &mut app.list_state);
+}
+
+fn wave_context_label(app: &App) -> String {
+    let Some(seed) = app.config.wave_context.as_deref() else {
+        return "Моя волна".to_string();
+    };
+    app.wave_settings
+        .as_ref()
+        .and_then(|settings| {
+            settings
+                .contexts
+                .iter()
+                .find(|context| context.seed == seed)
+        })
+        .map(|context| context.name.clone())
+        .unwrap_or_else(|| seed.to_string())
+}
+
+fn wave_group_value_label(app: &App, group: &crate::api::WaveSettingGroup) -> String {
+    let seed = app
+        .config
+        .wave_settings
+        .get(&group.key)
+        .map(String::as_str)
+        .filter(|seed| !seed.is_empty());
+    match seed {
+        Some(seed) => group
+            .values
+            .iter()
+            .find(|value| value.seed.as_deref() == Some(seed))
+            .map(|value| value.name.clone())
+            .unwrap_or_else(|| seed.to_string()),
+        None => group
+            .values
+            .iter()
+            .find(|value| value.seed.is_none())
+            .map(|value| value.name.clone())
+            .unwrap_or_else(|| "Любое".to_string()),
+    }
 }
 
 fn setting_item(

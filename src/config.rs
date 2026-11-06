@@ -1,5 +1,6 @@
 use crate::theme::Theme;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,10 +19,28 @@ pub enum Quality {
 impl Quality {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Lossless => "FLAC",
-            Self::High => "MP3 320",
-            Self::Medium => "AAC 192",
-            Self::Low => "AAC 64",
+            Self::Lossless => "Превосходное",
+            Self::High => "Высокое",
+            Self::Medium => "Среднее",
+            Self::Low => "Низкое",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Lossless => Self::High,
+            Self::High => Self::Medium,
+            Self::Medium => Self::Low,
+            Self::Low => Self::Lossless,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Lossless => Self::Low,
+            Self::High => Self::Lossless,
+            Self::Medium => Self::High,
+            Self::Low => Self::Medium,
         }
     }
 }
@@ -43,6 +62,10 @@ pub struct Config {
     pub volume: u8,
     /// Тема интерфейса
     pub theme: Theme,
+    /// Выбранный контекст «Моей волны» (например, `activity:fall-asleep`).
+    pub wave_context: Option<String>,
+    /// Значения настроек волны: ключ группы (`moodEnergy`, `language`, …) → сид.
+    pub wave_settings: HashMap<String, String>,
 }
 
 impl Default for Config {
@@ -55,6 +78,8 @@ impl Default for Config {
             audio_quality: Quality::default(),
             volume: 70,
             theme: Theme::default(),
+            wave_context: None,
+            wave_settings: HashMap::new(),
         }
     }
 }
@@ -120,5 +145,7 @@ impl Config {
         self.login = None;
         self.uid = None;
         self.has_plus = false;
+        self.wave_context = None;
+        self.wave_settings.clear();
     }
 }

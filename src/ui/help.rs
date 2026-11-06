@@ -78,6 +78,7 @@ fn left_lines(p: Palette) -> Vec<Line<'static>> {
         heading("Навигация", p),
         row("1 2 3", "Волна · Библиотека · Поиск", p),
         row("4 / ,", "Настройки", p),
+        row("w", "Настройки Моей волны", p),
         row("Tab / ⇧Tab", "Раздел / фильтр", p),
         row("↑↓ PgUp PgDn", "Перемещение по списку", p),
         row("Home / End", "Начало / конец", p),
@@ -102,6 +103,7 @@ fn compact_lines(p: Palette) -> Vec<Line<'static>> {
     vec![
         heading("Навигация", p),
         row("1 2 3 4", "Волна · Библиотека · Поиск · Настройки", p),
+        row("w", "Настройки Моей волны", p),
         row("Tab / ⇧Tab", "Раздел / фильтр", p),
         row("↑↓ PgUp PgDn", "Перемещение по списку", p),
         row("Enter / Esc", "Играть-открыть / назад", p),
@@ -126,6 +128,12 @@ fn compact_lines(p: Palette) -> Vec<Line<'static>> {
 
 fn right_lines(p: Palette) -> Vec<Line<'static>> {
     vec![
+        heading("Настройки волны", p),
+        row("← / →", "Выбрать значение", p),
+        row("Enter", "Изменить / применить", p),
+        row("a", "Применить настройки", p),
+        row("Esc", "Назад (с применением)", p),
+        blank(),
         heading("Ввод текста", p),
         row("Enter", "Применить / искать", p),
         row("Esc", "Отменить", p),
