@@ -2,6 +2,7 @@ mod api;
 mod app;
 pub mod auth;
 mod config;
+mod mpris;
 mod player;
 mod theme;
 mod ui;

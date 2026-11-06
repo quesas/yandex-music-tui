@@ -11,14 +11,12 @@ use std::collections::HashSet;
 use std::fmt;
 use std::time::Duration;
 
-/// Базовый URL API Яндекс Музыки (тот же, что использует Murglar).
 pub const BASE_URL: &str = "https://api.music.yandex.ru";
-/// Таймаут по умолчанию для запросов.
+
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
-/// User-Agent официального desktop-клиента Яндекс Музыки (из Murglar).
+
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) YandexMusic/5.62.0 Chrome/136.0.7103.149 Electron/36.4.0 Safari/537.36";
 
-/// Токен больше не принимается Яндексом (HTTP 401).
 #[derive(Debug)]
 pub struct SessionExpired;
 
@@ -30,7 +28,6 @@ impl fmt::Display for SessionExpired {
 
 impl std::error::Error for SessionExpired {}
 
-/// Клиент API Яндекс Музыки.
 #[derive(Debug, Clone)]
 pub struct YandexClient {
     pub token: Option<String>,
@@ -100,9 +97,6 @@ impl YandexClient {
         Ok(resp.json().await?)
     }
 
-    /// Кто я: uid, логин и наличие Плюса через GET /account/about.
-    ///
-    /// Именно этот запрос использует Murglar после получения OAuth-токена.
     pub async fn account(&self) -> Result<AccountInfo> {
         if self.token.is_none() {
             return Ok(AccountInfo {
@@ -116,7 +110,6 @@ impl YandexClient {
         let body = self.get_json("account/about", &[]).await?;
         let info = parse_account_about(&body)?;
 
-        // Защита от невалидного токена, на который API ответил 200 без данных.
         if info.uid.is_none() && info.login.is_none() {
             return Err(SessionExpired.into());
         }
@@ -124,7 +117,6 @@ impl YandexClient {
         Ok(info)
     }
 
-    /// Любимые треки пользователя: /users/{uid}/likes/tracks + /tracks?trackIds=...
     pub async fn liked_tracks(&self, uid: u64) -> Result<Vec<Track>> {
         let body = self
             .get_json(&format!("users/{uid}/likes/tracks"), &[])
@@ -148,7 +140,6 @@ impl YandexClient {
         Ok(tracks)
     }
 
-    /// Множество любимых треков (id или id:albumId) для синхронизации состояния лайков.
     pub async fn liked_track_ids(&self, uid: u64) -> Result<HashSet<String>> {
         let body = self
             .get_json(&format!("users/{uid}/likes/tracks"), &[])
@@ -156,7 +147,6 @@ impl YandexClient {
         Ok(library_track_ids(&body).into_iter().collect())
     }
 
-    /// Множество треков, помеченных «Не рекомендовать».
     pub async fn disliked_track_ids(&self, uid: u64) -> Result<HashSet<String>> {
         let body = self
             .get_json(&format!("users/{uid}/dislikes/tracks"), &[])
@@ -164,7 +154,6 @@ impl YandexClient {
         Ok(library_track_ids(&body).into_iter().collect())
     }
 
-    /// Поставить или снять лайк. Добавление лайка автоматически снимает дизлайк.
     pub async fn set_track_like(&self, uid: u64, track_id: &str, liked: bool) -> Result<()> {
         let action = if liked { "add-multiple" } else { "remove" };
         let form = [("track-ids", track_id.to_string())];
@@ -173,7 +162,6 @@ impl YandexClient {
         Ok(())
     }
 
-    /// Поставить или снять дизлайк. Добавление дизлайка автоматически снимает лайк.
     pub async fn set_track_dislike(&self, uid: u64, track_id: &str, disliked: bool) -> Result<()> {
         let action = if disliked { "add-multiple" } else { "remove" };
         let form = [("track-ids", track_id.to_string())];
@@ -182,7 +170,6 @@ impl YandexClient {
         Ok(())
     }
 
-    /// Любимые исполнители: /users/{uid}/likes/artists/page
     pub async fn liked_artists(&self, uid: u64) -> Result<Vec<Artist>> {
         let body = self
             .get_json(
@@ -204,7 +191,6 @@ impl YandexClient {
             .unwrap_or_default())
     }
 
-    /// Любимые плейлисты: /users/{uid}/likes/playlists/page
     pub async fn liked_playlists(&self, uid: u64) -> Result<Vec<Playlist>> {
         let body = self
             .get_json(
@@ -226,7 +212,6 @@ impl YandexClient {
             .unwrap_or_default())
     }
 
-    /// Треки плейлиста: /users/{uid}/playlists/{kind}?richTracks=true
     pub async fn playlist_tracks(&self, uid: &str, kind: &str) -> Result<Vec<Track>> {
         let body = self
             .get_json(
@@ -247,10 +232,6 @@ impl YandexClient {
             .unwrap_or_default())
     }
 
-    /// Прямая ссылка на аудиофайл трека.
-    ///
-    /// `download-info` возвращает список вариантов, а сам `downloadInfoUrl` —
-    /// XML с host/path/ts/s, из которых собирается ссылка `/get-mp3/...`.
     pub async fn track_audio_url(&self, track_id: &str, quality: Quality) -> Result<String> {
         let body = self
             .get_json(&format!("tracks/{track_id}/download-info"), &[])
@@ -285,7 +266,6 @@ impl YandexClient {
         Ok(format!("https://{host}/get-mp3/{s}/{ts}{path}"))
     }
 
-    /// Скачать аудиофайл трека в память.
     pub async fn track_audio(&self, track_id: &str, quality: Quality) -> Result<Vec<u8>> {
         let url = self.track_audio_url(track_id, quality).await?;
         let resp = self
@@ -300,7 +280,6 @@ impl YandexClient {
         Ok(resp.bytes().await?.to_vec())
     }
 
-    /// Треки альбома: /albums/{id}/with-tracks
     pub async fn album_tracks(&self, id: &str) -> Result<Vec<Track>> {
         let body = self
             .get_json(
@@ -327,7 +306,6 @@ impl YandexClient {
         Ok(tracks)
     }
 
-    /// Популярные треки исполнителя: /artists/{id}/tracks
     pub async fn artist_tracks(&self, id: &str) -> Result<Vec<Track>> {
         let body = self
             .get_json(
@@ -344,7 +322,6 @@ impl YandexClient {
             .unwrap_or_default())
     }
 
-    /// Поиск через /search/instant/mixed — тот же endpoint, что в Murglar.
     pub async fn search(
         &self,
         text: &str,
@@ -364,7 +341,7 @@ impl YandexClient {
                 ],
             )
             .await?;
-        // В части ответов /search/instant/mixed нет обёртки result.
+
         let result = body.get("result").unwrap_or(&body);
 
         let mut items = Vec::new();
@@ -401,7 +378,6 @@ impl YandexClient {
         Ok(items)
     }
 
-    /// Настройки «Моей волны»: занятия и доступные значения настроек.
     pub async fn wave_settings(&self) -> Result<WaveSettings> {
         let body = self
             .get_json(
@@ -412,10 +388,6 @@ impl YandexClient {
         Ok(WaveSettings::from_response(&body))
     }
 
-    /// Первая порция «Моей волны» через /rotor/session/new.
-    ///
-    /// `seeds` — готовые сиды сессии. Пустой список означает обычную
-    /// «Мою волну» без дополнительных настроек.
     pub async fn start_wave(&self, seeds: &[String]) -> Result<WaveBatch> {
         let attempts = if seeds.is_empty() {
             vec![
@@ -442,7 +414,6 @@ impl YandexClient {
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("не удалось запустить Мою волну")))
     }
 
-    /// Следующая порция волны для уже открытой rotor-сессии.
     pub async fn next_wave(&self, session_id: &str, queue: &[String]) -> Result<WaveBatch> {
         let body = serde_json::json!({ "queue": queue });
         let body = self
@@ -452,12 +423,10 @@ impl YandexClient {
     }
 }
 
-/// Некоторые ручки Яндекса то заворачивают ответ в result, то отдают его сверху.
 fn result_or_body(body: &Value) -> &Value {
     body.get("result").unwrap_or(body)
 }
 
-/// Идентификаторы треков из блока `library.tracks` (лайки или дизлайки).
 fn library_track_ids(body: &Value) -> Vec<String> {
     let result = result_or_body(body);
     let mut ids = Vec::new();
@@ -480,7 +449,6 @@ fn library_track_ids(body: &Value) -> Vec<String> {
     ids
 }
 
-/// Разбор ответа `/account/about` (формат Murglar: result.{uid,login,hasPlus}).
 pub fn parse_account_about(body: &serde_json::Value) -> Result<AccountInfo> {
     let result = result_or_body(body);
 
@@ -554,10 +522,6 @@ impl AudioVariant<'_> {
     }
 }
 
-/// Выбрать вариант из ответа `download-info` под желаемое качество.
-///
-/// Если запрошенного варианта нет (например, без Яндекс Плюса нет FLAC),
-/// берётся ближайший доступный, чтобы воспроизведение не ломалось.
 fn select_audio_variant<'a>(variants: &'a [Value], quality: Quality) -> Option<AudioVariant<'a>> {
     let parsed: Vec<_> = variants
         .iter()

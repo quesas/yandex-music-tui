@@ -3,7 +3,9 @@ use crate::api::{
     YandexClient,
 };
 use crate::config::{Config, Quality};
+use crate::mpris::{MprisCommand, MprisSnapshot, MprisTrack};
 use crate::player::TrackEnd;
+use crate::player::engine::PlayState;
 use crate::ui;
 use anyhow::Context;
 use rand::seq::SliceRandom;
@@ -12,13 +14,12 @@ use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// Интервал тика прогресса/UI
 const TICK_MS: u64 = 250;
-/// Seek ±5 секунд
+
 const SEEK_STEP: i64 = 5;
-/// Шаг изменения громкости
+
 const VOLUME_STEP: u8 = 5;
-/// Количество пунктов на экране настроек
+
 const SETTINGS_COUNT: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,7 +196,6 @@ pub struct App {
 }
 
 impl App {
-    /// Полный выход из аккаунта (токен + данные профиля), как `logout()` в Murglar.
     fn logout(&mut self) -> anyhow::Result<()> {
         self.config.logout();
         self.config.save()?;
@@ -462,6 +462,8 @@ pub async fn run() -> anyhow::Result<()> {
     app.reset_selection();
 
     let (api_tx, mut api_rx) = mpsc::channel::<ApiEvent>(64);
+    let (mpris_cmd_tx, mut mpris_cmd_rx) = mpsc::unbounded_channel::<MprisCommand>();
+    let mpris_tx = crate::mpris::spawn(mpris_cmd_tx);
 
     if app.has_token() {
         spawn_account(api_tx.clone(), app.client.clone(), false);
@@ -479,6 +481,10 @@ pub async fn run() -> anyhow::Result<()> {
             app.login_token_editing = false;
             app.status_message = "Токен получен из браузера, проверка профиля...".into();
             spawn_account(api_tx.clone(), app.client.clone(), true);
+        }
+
+        while let Ok(command) = mpris_cmd_rx.try_recv() {
+            handle_mpris_command(&mut app, command, &api_tx);
         }
 
         terminal.draw(|f| ui::draw(f, &mut app))?;
@@ -533,9 +539,9 @@ pub async fn run() -> anyhow::Result<()> {
         let dt = now - last_tick;
         last_tick = now;
         on_tick(&mut app, dt, &api_tx);
+        let _ = mpris_tx.send(mpris_snapshot(&app));
     }
 
-    // Сохраняем громкость/качество перед выходом
     app.config.volume = app.player.engine.volume;
     let _ = app.config.save();
 
@@ -832,12 +838,10 @@ fn handle_api_event(app: &mut App, event: ApiEvent, tx: &mpsc::Sender<ApiEvent>)
     }
 }
 
-/// Ключ состояния лайка — только id трека, без привязки к альбому.
 fn track_key(full_id: &str) -> String {
     full_id.split(':').next().unwrap_or(full_id).to_string()
 }
 
-/// Обновить локальное состояние лайков/дизлайков после успешного запроса.
 fn apply_rating(app: &mut App, action: RatingAction, track: &Track) {
     let key = track.id.clone();
     match action {
@@ -901,7 +905,6 @@ fn spawn_account(tx: mpsc::Sender<ApiEvent>, client: YandexClient, explicit_logi
     });
 }
 
-/// Сиды для новой сессии «Моей волны» с учётом выбранных настроек.
 fn wave_seeds(app: &App) -> Vec<String> {
     let context = app
         .config
@@ -1163,9 +1166,6 @@ fn load_ratings(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
     });
 }
 
-/// Трек, к которому применяется лайк/дизлайк.
-///
-/// В «Моей волне» это текущий играющий трек, в остальных списках — выбранный.
 fn rating_target(app: &App) -> Option<Track> {
     let selected = |tracks: &[Track]| app.selected().and_then(|index| tracks.get(index).cloned());
     let current = || app.player.current_track().cloned();
@@ -1490,8 +1490,6 @@ fn current_track_list_mut(app: &mut App) -> Option<&mut Vec<Track>> {
     }
 }
 
-/// Перемешать треки текущего экрана; если из этого списка сейчас играет
-/// очередь, её порядок тоже синхронизируется с новым списком.
 fn shuffle_tracks(app: &mut App) {
     let current = app.player.current_track().cloned();
     let (len, sync_queue) = match current_track_list(app) {
@@ -1556,6 +1554,82 @@ fn on_tick(app: &mut App, dt: Duration, tx: &mpsc::Sender<ApiEvent>) {
     }
 
     advance_track(app, true, tx);
+}
+
+fn handle_mpris_command(app: &mut App, command: MprisCommand, tx: &mpsc::Sender<ApiEvent>) {
+    match command {
+        MprisCommand::Play => play_from_mpris(app, tx),
+        MprisCommand::Pause => {
+            if app.player.engine.state == PlayState::Playing {
+                app.player.toggle_pause();
+            }
+        }
+        MprisCommand::PlayPause => match app.player.engine.state {
+            PlayState::Playing | PlayState::Paused => app.player.toggle_pause(),
+            PlayState::Stopped | PlayState::Loading => play_from_mpris(app, tx),
+        },
+        MprisCommand::Stop => {
+            app.player.stop();
+            app.status_message = "Воспроизведение остановлено".into();
+        }
+        MprisCommand::Next => advance_track(app, true, tx),
+        MprisCommand::Previous => advance_track(app, false, tx),
+        MprisCommand::SeekBy(secs) => {
+            if matches!(
+                app.player.engine.state,
+                PlayState::Playing | PlayState::Paused
+            ) {
+                app.player.seek_by(secs.round() as i64);
+            }
+        }
+        MprisCommand::SetPosition(secs) => {
+            if matches!(
+                app.player.engine.state,
+                PlayState::Playing | PlayState::Paused
+            ) {
+                let delta = (secs - app.player.engine.position).round() as i64;
+                app.player.seek_by(delta);
+            }
+        }
+        MprisCommand::SetVolume(volume) => {
+            app.player.engine.set_volume(volume);
+            app.config.volume = app.player.engine.volume;
+        }
+        MprisCommand::Raise => {}
+        MprisCommand::Quit => app.should_exit = true,
+    }
+}
+
+fn play_from_mpris(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
+    match app.player.engine.state {
+        PlayState::Playing | PlayState::Loading => {}
+        PlayState::Paused => app.player.toggle_pause(),
+        PlayState::Stopped => {
+            if app.player.current_track().is_some() {
+                start_audio_load(app, tx);
+            } else {
+                play_current(app, tx);
+            }
+        }
+    }
+}
+
+fn mpris_snapshot(app: &App) -> MprisSnapshot {
+    let track = app.player.current_track().map(|track| MprisTrack {
+        id: track.id.clone(),
+        title: track.title.clone(),
+        artist: track.artist.clone(),
+        duration_secs: track.duration,
+    });
+
+    MprisSnapshot {
+        state: app.player.engine.state,
+        track,
+        position_secs: app.player.engine.position,
+        volume: app.player.engine.volume,
+        can_go_next: !app.player.queue.is_empty(),
+        can_go_previous: !app.player.queue.is_empty(),
+    }
 }
 
 fn handle_paste(app: &mut App, text: &str) {
@@ -1647,7 +1721,6 @@ fn handle_key(
         return AppAction::None;
     }
 
-    // --- Ввод токена на экране входа ---
     if app.screen == Screen::Login && app.login_token_editing {
         match key.code {
             KeyCode::Enter => match crate::auth::parse_token_input(&app.login_token_input) {
@@ -1681,7 +1754,6 @@ fn handle_key(
         return AppAction::None;
     }
 
-    // --- Ввод поискового запроса ---
     if app.screen == Screen::Search && app.search.editing {
         match key.code {
             KeyCode::Enter => {
@@ -1716,13 +1788,11 @@ fn handle_key(
         return AppAction::None;
     }
 
-    // --- Меню подсказок по клавишам ---
     if key.code == KeyCode::Char('?') {
         app.show_help = true;
         return AppAction::None;
     }
 
-    // --- Экран входа без ввода токена ---
     if app.screen == Screen::Login {
         match key.code {
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1755,7 +1825,6 @@ fn handle_key(
         return AppAction::None;
     }
 
-    // --- Экран настроек ---
     if app.screen == Screen::Settings {
         match key.code {
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1788,7 +1857,6 @@ fn handle_key(
         return AppAction::None;
     }
 
-    // --- Настройки «Моей волны» ---
     if app.screen == Screen::WaveSetup {
         let action_row = app.wave_setup_len().saturating_sub(1);
         match key.code {
@@ -1839,7 +1907,6 @@ fn handle_key(
         return AppAction::None;
     }
 
-    // --- Глобальные клавиши ---
     match (key.code, key.modifiers) {
         (KeyCode::Char('q'), _) => {
             app.confirm = Some(ConfirmAction::Quit);
@@ -2071,7 +2138,6 @@ fn move_selection(app: &mut App, delta: i64) {
 }
 
 impl crate::player::Player {
-    /// Подпись для UI: «Артист — Название [статус]»
     pub fn now_playing(&self) -> String {
         match self.current_track() {
             Some(t) => format!("{} — {}", t.artist, t.title),

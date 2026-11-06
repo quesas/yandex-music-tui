@@ -3,7 +3,6 @@ use std::fmt;
 use std::io::Cursor;
 use std::time::Duration;
 
-/// Состояние воспроизведения.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayState {
     Stopped,
@@ -12,16 +11,15 @@ pub enum PlayState {
     Paused,
 }
 
-/// Реальный аудиодвижок на rodio/symphonia.
 pub struct AudioEngine {
     pub state: PlayState,
-    /// Позиция текущего трека в секундах
+
     pub position: f64,
-    /// Длительность трека в секундах
+
     pub duration: f64,
-    /// 0..=100
+
     pub volume: u8,
-    /// Подпись для UI (артист — трек)
+
     pub now_playing: String,
     player: Option<RodioPlayer>,
     sink: Option<rodio::MixerDeviceSink>,
@@ -58,7 +56,6 @@ impl AudioEngine {
         }
     }
 
-    /// Подготовить движок к загрузке трека (звук ещё не получен).
     pub fn prepare(&mut self, duration_sec: u64, label: impl Into<String>) {
         if let Some(player) = &self.player {
             player.stop();
@@ -84,7 +81,6 @@ impl AudioEngine {
         Ok(())
     }
 
-    /// Запустить воспроизведение уже скачанного MP3/FLAC и т.п.
     pub fn play_bytes(&mut self, bytes: Vec<u8>) -> Result<(), String> {
         self.ensure_output()?;
 
@@ -155,7 +151,6 @@ impl AudioEngine {
         }
     }
 
-    /// Обновить позицию и определить конец трека.
     pub fn tick(&mut self, _dt: Duration) {
         let Some(player) = &self.player else {
             return;

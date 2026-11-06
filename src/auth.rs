@@ -1,12 +1,9 @@
 use anyhow::{Context, Result};
 
-/// OAuth URL авторизации Яндекс Музыки из репозитория Murglar.
 pub const AUTH_START_URL: &str = "https://oauth.yandex.ru/authorize?response_type=token&display=popup&scope=music%3Acontent&scope=music%3Aread&scope=music%3Awrite&client_id=97fe03033fa34407ac9bcf91d5afed5b&redirect_uri=music-application%3A%2F%2Fdesktop%2Foauth%3FredirectUri%3D%26language%3Dru&state=abcdef123&origin=music_desktop&language=ru";
 
-/// Префикс URI, на который редиректит Яндекс после успешного входа.
 pub const REDIRECT_URI_PREFIX: &str = "music-application://desktop/oauth";
 
-/// Извлечение access_token из URL редиректа.
 pub fn extract_token_from_url(url: &str) -> Option<String> {
     if !url.contains(REDIRECT_URI_PREFIX) {
         return None;
@@ -24,7 +21,6 @@ fn extract_access_token(input: &str) -> Option<String> {
     }
 }
 
-/// Принимает либо готовый токен, либо URL редиректа после входа в браузере.
 pub fn parse_token_input(input: &str) -> Option<String> {
     let trimmed = input.trim().trim_matches(|c| c == '"' || c == '\'');
     if trimmed.is_empty() {
@@ -42,7 +38,6 @@ pub fn parse_token_input(input: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-/// Открывает страницу авторизации в системном браузере.
 pub fn open_auth_url() -> Result<()> {
     std::process::Command::new("xdg-open")
         .arg(AUTH_START_URL)
@@ -54,8 +49,6 @@ pub fn open_auth_url() -> Result<()> {
     Ok(())
 }
 
-/// Регистрирует обработчик `music-application://`, чтобы кнопка «Открыть приложение»
-/// возвращала OAuth-токен в это приложение, а не терялась в браузере.
 pub fn register_uri_handler() -> Result<()> {
     let exe = std::env::current_exe().context("не удалось определить путь к исполняемому файлу")?;
     let apps_dir = dirs::data_dir()

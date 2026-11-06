@@ -1,7 +1,6 @@
 use super::{Track, track_from_json};
 use serde_json::Value;
 
-/// Порция треков из rotor-сессии «Моей волны».
 #[derive(Debug, Clone, Default)]
 pub struct WaveBatch {
     pub tracks: Vec<Track>,
@@ -11,7 +10,6 @@ pub struct WaveBatch {
 }
 
 impl WaveBatch {
-    /// Разбор ответа /rotor/session/new и /rotor/session/{id}/tracks.
     pub fn from_response(body: &Value) -> Self {
         let result = body.get("result").unwrap_or(body);
         let session_id = result
@@ -45,14 +43,12 @@ impl WaveBatch {
     }
 }
 
-/// Контекст волны (занятие), например «Засыпаю» → `activity:fall-asleep`.
 #[derive(Debug, Clone, Default)]
 pub struct WaveContext {
     pub seed: String,
     pub name: String,
 }
 
-/// Одна группа настроек волны, например «Под настроение» или «По языку».
 #[derive(Debug, Clone, Default)]
 pub struct WaveSettingGroup {
     pub key: String,
@@ -60,14 +56,12 @@ pub struct WaveSettingGroup {
     pub values: Vec<WaveSettingValue>,
 }
 
-/// Одно значение настройки волны. `seed == None` — «Любое» (значение по умолчанию).
 #[derive(Debug, Clone, Default)]
 pub struct WaveSettingValue {
     pub name: String,
     pub seed: Option<String>,
 }
 
-/// Настройки «Моей волны» из /rotor/wave/settings.
 #[derive(Debug, Clone, Default)]
 pub struct WaveSettings {
     pub contexts: Vec<WaveContext>,
@@ -75,7 +69,6 @@ pub struct WaveSettings {
 }
 
 impl WaveSettings {
-    /// Разбор ответа /rotor/wave/settings.
     pub fn from_response(body: &Value) -> Self {
         let result = body.get("result").unwrap_or(body);
         let mut contexts = Vec::new();
@@ -168,7 +161,6 @@ impl WaveSettings {
         Self { contexts, groups }
     }
 
-    /// Запасной вариант, если сервер не вернул настройки.
     pub fn fallback() -> Self {
         let group = |key: &str, name: &str, values: &[(&str, Option<&str>)]| WaveSettingGroup {
             key: key.to_string(),

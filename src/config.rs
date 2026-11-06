@@ -5,14 +5,13 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Quality {
-    /// FLAC / lossless — максимальное качество (нужен Я.Плюс)
     #[default]
     Lossless,
-    /// MP3 320 kbps
+
     High,
-    /// AAC ~192 kbps
+
     Medium,
-    /// AAC ~64 kbps
+
     Low,
 }
 
@@ -48,23 +47,22 @@ impl Quality {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// OAuth-токен Яндекса, полученный через браузер или введённый вручную.
     pub oauth_token: Option<String>,
-    /// Логин пользователя (`ynd-login` в Murglar).
+
     pub login: Option<String>,
-    /// UID пользователя (`ynd-user-id` в Murglar).
+
     pub uid: Option<u64>,
-    /// Активен ли Яндекс Плюс (`ynd-has-premium` в Murglar).
+
     pub has_plus: bool,
-    /// Желаемое качество звука
+
     pub audio_quality: Quality,
-    /// Громкость 0..=100
+
     pub volume: u8,
-    /// Тема интерфейса
+
     pub theme: Theme,
-    /// Выбранный контекст «Моей волны» (например, `activity:fall-asleep`).
+
     pub wave_context: Option<String>,
-    /// Значения настроек волны: ключ группы (`moodEnergy`, `language`, …) → сид.
+
     pub wave_settings: HashMap<String, String>,
 }
 
@@ -92,7 +90,6 @@ impl Config {
             .join("config.toml")
     }
 
-    /// Файл, через который браузерный OAuth-callback передаёт токен запущенному TUI.
     pub fn pending_token_path() -> PathBuf {
         Self::path().with_file_name("pending_token")
     }
@@ -132,14 +129,12 @@ impl Config {
         Ok(())
     }
 
-    /// Сохранить данные аккаунта, полученные из `/account/about`.
     pub fn apply_account(&mut self, account: &crate::api::AccountInfo) {
         self.login = account.login.clone();
         self.uid = account.uid;
         self.has_plus = account.plus;
     }
 
-    /// Полный выход: токен и данные аккаунта удаляются (аналог `logout()` в Murglar).
     pub fn logout(&mut self) {
         self.oauth_token = None;
         self.login = None;

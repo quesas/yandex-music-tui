@@ -12,7 +12,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-/// Разметка: тонкий заголовок, левое меню + контент, плеер-бар, статус.
 pub fn draw(f: &mut Frame, app: &mut App) {
     let palette = app.palette();
     f.render_widget(Block::new().style(palette.base()), f.area());
@@ -20,10 +19,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let main = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // заголовок
-            Constraint::Min(6),    // меню + контент
-            Constraint::Length(5), // плеер-бар
-            Constraint::Length(1), // статус
+            Constraint::Length(1),
+            Constraint::Min(6),
+            Constraint::Length(5),
+            Constraint::Length(1),
         ])
         .split(f.area());
 

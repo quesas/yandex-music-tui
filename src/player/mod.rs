@@ -3,19 +3,15 @@ pub mod engine;
 use engine::PlayState;
 use std::time::Duration;
 
-/// Плеер: очередь треков + текущее состояние воспроизведения.
-/// Управление движком делегирует `AudioEngine`.
 #[derive(Debug, Default)]
 pub struct Player {
     pub queue: Vec<crate::api::models::Track>,
-    /// Индекс текущего трека в очереди
+
     pub index: Option<usize>,
     pub engine: engine::AudioEngine,
 }
 
 impl Player {
-    /// Подготовить очередь и текущий трек. Сам звук загрузится отдельно
-    /// через `play_bytes`.
     pub fn prepare_at(&mut self, queue: &[crate::api::models::Track], index: usize) {
         if index >= queue.len() {
             return;
@@ -29,7 +25,6 @@ impl Player {
         );
     }
 
-    /// Заменить очередь, сохранив текущий трек (индекс пересчитывается).
     pub fn set_queue(
         &mut self,
         queue: Vec<crate::api::models::Track>,
@@ -79,7 +74,6 @@ impl Player {
         );
     }
 
-    /// Тик прогресса; возвращает `Finished`, если трек дошёл до конца.
     pub fn tick(&mut self, dt: Duration) -> TrackEnd {
         self.engine.tick(dt);
         match self.engine.state {

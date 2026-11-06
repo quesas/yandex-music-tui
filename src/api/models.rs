@@ -1,20 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-/// Трек. Достаточно полей для списков TUI и очереди плеера.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Track {
     pub id: String,
     pub album_id: Option<String>,
     pub title: String,
     pub artist: String,
-    /// Длительность в секундах
+
     pub duration: u64,
-    /// Есть ли доступ для воспроизведения (зависит от Плюса и региона)
+
     pub available: bool,
 }
 
 impl Track {
-    /// Идентификатор трека для параметра `trackIds` (id:albumId).
     pub fn full_id(&self) -> String {
         match &self.album_id {
             Some(album) => format!("{}:{}", self.id, album),
@@ -77,7 +75,6 @@ impl Playlist {
     }
 }
 
-/// Элемент общего поиска.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SearchItem {
     Track(Track),
@@ -115,7 +112,6 @@ impl SearchItem {
     }
 }
 
-/// Тип фильтра поиска (параметр `type` в /search/instant/mixed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchFilter {
     All,
