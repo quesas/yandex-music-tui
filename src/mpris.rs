@@ -1,5 +1,6 @@
+use crate::player::RepeatMode;
 use crate::player::engine::PlayState;
-use mpris_server::{Metadata, PlaybackStatus, Player, Time, TrackId};
+use mpris_server::{LoopStatus, Metadata, PlaybackStatus, Player, Time, TrackId};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -13,6 +14,7 @@ pub enum MprisCommand {
     SeekBy(f64),
     SetPosition(f64),
     SetVolume(u8),
+    SetRepeat(RepeatMode),
     Raise,
     Quit,
 }
@@ -31,6 +33,7 @@ pub struct MprisSnapshot {
     pub track: Option<MprisTrack>,
     pub position_secs: f64,
     pub volume: u8,
+    pub repeat: RepeatMode,
     pub can_go_next: bool,
     pub can_go_previous: bool,
 }
@@ -134,6 +137,11 @@ fn connect(player: &Player, tx: UnboundedSender<MprisCommand>) {
     });
 
     let sender = tx.clone();
+    player.connect_set_loop_status(move |_, status| {
+        let _ = sender.send(MprisCommand::SetRepeat(repeat_from_loop_status(status)));
+    });
+
+    let sender = tx.clone();
     player.connect_raise(move |_| {
         let _ = sender.send(MprisCommand::Raise);
     });
@@ -156,6 +164,7 @@ async fn apply(player: &Player, snapshot: MprisSnapshot) {
     let _ = player
         .set_volume(snapshot.volume.min(100) as f64 / 100.0)
         .await;
+    let _ = player.set_loop_status(loop_status(snapshot.repeat)).await;
     let _ = player.set_can_play(snapshot.track.is_some()).await;
     let _ = player.set_can_pause(snapshot.track.is_some()).await;
     let _ = player
@@ -168,6 +177,22 @@ async fn apply(player: &Player, snapshot: MprisSnapshot) {
         .await;
     let _ = player.set_can_go_next(snapshot.can_go_next).await;
     let _ = player.set_can_go_previous(snapshot.can_go_previous).await;
+}
+
+fn loop_status(repeat: RepeatMode) -> LoopStatus {
+    match repeat {
+        RepeatMode::Off => LoopStatus::None,
+        RepeatMode::All => LoopStatus::Playlist,
+        RepeatMode::One => LoopStatus::Track,
+    }
+}
+
+fn repeat_from_loop_status(status: LoopStatus) -> RepeatMode {
+    match status {
+        LoopStatus::None => RepeatMode::Off,
+        LoopStatus::Track => RepeatMode::One,
+        LoopStatus::Playlist => RepeatMode::All,
+    }
 }
 
 fn metadata(track: &Option<MprisTrack>) -> Metadata {
@@ -241,6 +266,20 @@ mod tests {
             metadata.trackid().as_ref().map(|id| id.as_str()),
             Some("/org/mpris/MediaPlayer2/TrackList/NoTrack")
         );
+    }
+
+    #[test]
+    fn loop_status_maps_to_repeat_mode() {
+        assert_eq!(loop_status(RepeatMode::Off), LoopStatus::None);
+        assert_eq!(loop_status(RepeatMode::All), LoopStatus::Playlist);
+        assert_eq!(loop_status(RepeatMode::One), LoopStatus::Track);
+
+        assert_eq!(repeat_from_loop_status(LoopStatus::None), RepeatMode::Off);
+        assert_eq!(
+            repeat_from_loop_status(LoopStatus::Playlist),
+            RepeatMode::All
+        );
+        assert_eq!(repeat_from_loop_status(LoopStatus::Track), RepeatMode::One);
     }
 
     #[test]

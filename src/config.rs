@@ -1,3 +1,4 @@
+use crate::player::RepeatMode;
 use crate::theme::Theme;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -61,6 +62,9 @@ pub struct Config {
 
     pub theme: Theme,
 
+    /// Режим повтора: выключен / альбом / текущий трек.
+    pub repeat: RepeatMode,
+
     pub wave_context: Option<String>,
 
     pub wave_settings: HashMap<String, String>,
@@ -76,6 +80,7 @@ impl Default for Config {
             audio_quality: Quality::default(),
             volume: 70,
             theme: Theme::default(),
+            repeat: RepeatMode::default(),
             wave_context: None,
             wave_settings: HashMap::new(),
         }

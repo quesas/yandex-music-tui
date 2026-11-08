@@ -4,8 +4,8 @@ use crate::api::{
 };
 use crate::config::{Config, Quality};
 use crate::mpris::{MprisCommand, MprisSnapshot, MprisTrack};
-use crate::player::TrackEnd;
 use crate::player::engine::PlayState;
+use crate::player::{RepeatMode, TrackEnd};
 use crate::ui;
 use anyhow::Context;
 use rand::seq::SliceRandom;
@@ -20,7 +20,7 @@ const SEEK_STEP: i64 = 5;
 
 const VOLUME_STEP: u8 = 5;
 
-const SETTINGS_COUNT: usize = 3;
+const SETTINGS_COUNT: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
@@ -151,6 +151,8 @@ pub struct App {
     pub status_message: String,
     pub should_exit: bool,
     pub show_help: bool,
+    /// Смещение прокрутки окна подсказок (стрелки / PgUp / PgDn).
+    pub help_scroll: u16,
     pub confirm: Option<ConfirmAction>,
 
     pub screen: Screen,
@@ -446,6 +448,7 @@ pub async fn run() -> anyhow::Result<()> {
         },
         should_exit: false,
         show_help: false,
+        help_scroll: 0,
         confirm: None,
         config,
         wave_seq: 0,
@@ -458,6 +461,7 @@ pub async fn run() -> anyhow::Result<()> {
         wave_settings_seq: 0,
     };
     app.player.engine.volume = app.config.volume;
+    app.player.repeat = app.config.repeat;
     app.volume_before_mute = app.config.volume.max(1);
     app.reset_selection();
 
@@ -1534,26 +1538,87 @@ fn shuffle_tracks(app: &mut App) {
     app.status_message = format!("Перемешано треков: {len}");
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrackEndAction {
+    /// Заново включить тот же трек.
+    RepeatTrack,
+    /// Подгрузить следующую порцию «Моей волны».
+    LoadMoreWave,
+    /// Вернуться к первому треку альбома / очереди.
+    RestartAlbum,
+    /// Очередь закончилась, повтор выключен.
+    StopQueue,
+    /// Обычный переход к следующему треку.
+    NextTrack,
+}
+
+fn track_end_action(
+    repeat: RepeatMode,
+    source: PlaybackSource,
+    at_end: bool,
+    pending_wave: bool,
+    wave_loading: bool,
+) -> TrackEndAction {
+    if repeat == RepeatMode::One {
+        return TrackEndAction::RepeatTrack;
+    }
+
+    if source == PlaybackSource::Wave && !pending_wave && at_end && !wave_loading {
+        return TrackEndAction::LoadMoreWave;
+    }
+
+    if at_end && source != PlaybackSource::Wave {
+        return match repeat {
+            RepeatMode::All => TrackEndAction::RestartAlbum,
+            RepeatMode::Off => TrackEndAction::StopQueue,
+            RepeatMode::One => TrackEndAction::RepeatTrack,
+        };
+    }
+
+    TrackEndAction::NextTrack
+}
+
 fn on_tick(app: &mut App, dt: Duration, tx: &mpsc::Sender<ApiEvent>) {
     let end = app.player.tick(dt);
-    if end != TrackEnd::Finished {
+    if end != TrackEnd::Finished || app.player.current_track().is_none() {
         return;
     }
 
-    if app.playback_source == PlaybackSource::Wave && !app.pending_wave {
-        let at_end = app
-            .player
-            .index
-            .map(|i| i + 1 >= app.player.queue.len())
-            .unwrap_or(false);
-        if at_end && !app.wave_loading {
+    let at_end = app
+        .player
+        .index
+        .map(|i| i + 1 >= app.player.queue.len())
+        .unwrap_or(false);
+
+    match track_end_action(
+        app.player.repeat,
+        app.playback_source,
+        at_end,
+        app.pending_wave,
+        app.wave_loading,
+    ) {
+        TrackEndAction::RepeatTrack => {
+            let label = app.player.now_playing();
+            app.player.replay_current();
+            start_audio_load(app, tx);
+            if !label.is_empty() {
+                app.status_message = format!("Повтор трека: {label}");
+            }
+        }
+        TrackEndAction::LoadMoreWave => {
             app.pending_wave = true;
             start_wave_load(app, tx, true);
-            return;
         }
+        TrackEndAction::RestartAlbum => {
+            app.player.play_index(0);
+            start_audio_load(app, tx);
+            app.status_message = "Повтор альбома: играем с начала".into();
+        }
+        TrackEndAction::StopQueue => {
+            app.status_message = "Очередь завершена · Shift+R — включить повтор".into();
+        }
+        TrackEndAction::NextTrack => advance_track(app, true, tx),
     }
-
-    advance_track(app, true, tx);
 }
 
 fn handle_mpris_command(app: &mut App, command: MprisCommand, tx: &mpsc::Sender<ApiEvent>) {
@@ -1595,6 +1660,12 @@ fn handle_mpris_command(app: &mut App, command: MprisCommand, tx: &mpsc::Sender<
             app.player.engine.set_volume(volume);
             app.config.volume = app.player.engine.volume;
         }
+        MprisCommand::SetRepeat(mode) => {
+            app.player.repeat = mode;
+            app.config.repeat = mode;
+            let _ = app.config.save();
+            app.status_message = format!("Повтор: {}", mode.description());
+        }
         MprisCommand::Raise => {}
         MprisCommand::Quit => app.should_exit = true,
     }
@@ -1627,6 +1698,7 @@ fn mpris_snapshot(app: &App) -> MprisSnapshot {
         track,
         position_secs: app.player.engine.position,
         volume: app.player.engine.volume,
+        repeat: app.player.repeat,
         can_go_next: !app.player.queue.is_empty(),
         can_go_previous: !app.player.queue.is_empty(),
     }
@@ -1647,6 +1719,18 @@ fn handle_paste(app: &mut App, text: &str) {
     }
 }
 
+fn cycle_repeat(app: &mut App, forward: bool) {
+    let mode = if forward {
+        app.player.repeat.next()
+    } else {
+        app.player.repeat.prev()
+    };
+    app.player.repeat = mode;
+    app.config.repeat = mode;
+    let _ = app.config.save();
+    app.status_message = format!("Повтор: {}", mode.description());
+}
+
 fn toggle_setting(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
     match app.selected() {
         Some(0) => {
@@ -1655,6 +1739,8 @@ fn toggle_setting(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
             app.status_message = format!("Тема интерфейса: {}", app.config.theme.label());
         }
         Some(1) => cycle_quality(app, true, tx),
+        Some(2) => cycle_repeat(app, true),
+        Some(3) => open_wave_setup(app, tx),
         _ => {}
     }
 }
@@ -1671,6 +1757,7 @@ fn cycle_setting(app: &mut App, forward: bool, tx: &mpsc::Sender<ApiEvent>) {
             app.status_message = format!("Тема интерфейса: {}", app.config.theme.label());
         }
         Some(1) => cycle_quality(app, forward, tx),
+        Some(2) => cycle_repeat(app, forward),
         _ => {}
     }
 }
@@ -1715,8 +1802,21 @@ fn handle_key(
     }
 
     if app.show_help {
-        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
-            app.show_help = false;
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('?') => {
+                app.show_help = false;
+                app.help_scroll = 0;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.help_scroll = app.help_scroll.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.help_scroll = app.help_scroll.saturating_add(1);
+            }
+            KeyCode::PageUp => app.help_scroll = app.help_scroll.saturating_sub(10),
+            KeyCode::PageDown => app.help_scroll = app.help_scroll.saturating_add(10),
+            KeyCode::Home => app.help_scroll = 0,
+            _ => {}
         }
         return AppAction::None;
     }
@@ -1790,6 +1890,7 @@ fn handle_key(
 
     if key.code == KeyCode::Char('?') {
         app.show_help = true;
+        app.help_scroll = 0;
         return AppAction::None;
     }
 
@@ -1839,13 +1940,7 @@ fn handle_key(
                 app.screen = app.settings_back;
                 app.reset_selection();
             }
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                if app.selected() == Some(2) {
-                    open_wave_setup(app, tx);
-                } else {
-                    toggle_setting(app, tx);
-                }
-            }
+            KeyCode::Enter | KeyCode::Char(' ') => toggle_setting(app, tx),
             KeyCode::Left => cycle_setting(app, false, tx),
             KeyCode::Right => cycle_setting(app, true, tx),
             KeyCode::Up => move_selection(app, -1),
@@ -1966,6 +2061,10 @@ fn handle_key(
             app.confirm = Some(ConfirmAction::Logout);
             return AppAction::None;
         }
+        (KeyCode::Char('R'), _) => {
+            cycle_repeat(app, true);
+            return AppAction::None;
+        }
         (KeyCode::Char('f') | KeyCode::Char('F'), _) => toggle_like(app, tx),
         (KeyCode::Char('d') | KeyCode::Char('D'), _) => toggle_dislike(app, tx),
         _ => {}
@@ -2063,7 +2162,14 @@ fn handle_key(
                 play_current(app, tx);
             }
         }
-        KeyCode::Char(' ') => app.player.toggle_pause(),
+        KeyCode::Char(' ') => {
+            if app.player.engine.state == PlayState::Stopped {
+                // После окончания очереди пробел запускает текущий трек заново.
+                play_from_mpris(app, tx);
+            } else {
+                app.player.toggle_pause();
+            }
+        }
         KeyCode::Left => app.player.seek_by(-SEEK_STEP),
         KeyCode::Right => app.player.seek_by(SEEK_STEP),
         KeyCode::Char('n') => advance_track(app, true, tx),
@@ -2143,5 +2249,67 @@ impl crate::player::Player {
             Some(t) => format!("{} — {}", t.artist, t.title),
             None => self.engine.now_playing.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeat_one_restarts_any_source() {
+        assert_eq!(
+            track_end_action(RepeatMode::One, PlaybackSource::Other, false, false, false),
+            TrackEndAction::RepeatTrack
+        );
+        assert_eq!(
+            track_end_action(RepeatMode::One, PlaybackSource::Wave, true, false, false),
+            TrackEndAction::RepeatTrack
+        );
+    }
+
+    #[test]
+    fn album_end_stops_or_restarts() {
+        assert_eq!(
+            track_end_action(RepeatMode::Off, PlaybackSource::Other, true, false, false),
+            TrackEndAction::StopQueue
+        );
+        assert_eq!(
+            track_end_action(RepeatMode::All, PlaybackSource::Other, true, false, false),
+            TrackEndAction::RestartAlbum
+        );
+        assert_eq!(
+            track_end_action(RepeatMode::Off, PlaybackSource::Other, false, false, false),
+            TrackEndAction::NextTrack
+        );
+        assert_eq!(
+            track_end_action(RepeatMode::All, PlaybackSource::Other, false, false, false),
+            TrackEndAction::NextTrack
+        );
+    }
+
+    #[test]
+    fn wave_end_loads_more() {
+        assert_eq!(
+            track_end_action(RepeatMode::Off, PlaybackSource::Wave, true, false, false),
+            TrackEndAction::LoadMoreWave
+        );
+        assert_eq!(
+            track_end_action(RepeatMode::All, PlaybackSource::Wave, true, false, false),
+            TrackEndAction::LoadMoreWave
+        );
+        assert_eq!(
+            track_end_action(RepeatMode::All, PlaybackSource::Wave, false, false, false),
+            TrackEndAction::NextTrack
+        );
+        // Уже идёт подгрузка — повторный запрос не отправляем.
+        assert_eq!(
+            track_end_action(RepeatMode::Off, PlaybackSource::Wave, true, true, false),
+            TrackEndAction::NextTrack
+        );
+        assert_eq!(
+            track_end_action(RepeatMode::Off, PlaybackSource::Wave, true, false, true),
+            TrackEndAction::NextTrack
+        );
     }
 }

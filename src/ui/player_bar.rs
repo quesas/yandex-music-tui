@@ -67,6 +67,12 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let vol = app.player.engine.volume;
     let filled = (vol / 10) as usize;
     let vol_bars = format!("{}{}", "▮".repeat(filled), "▯".repeat(10 - filled));
+    let repeat = app.player.repeat;
+    let repeat_style = if repeat == crate::player::RepeatMode::Off {
+        Style::new().fg(p.dim)
+    } else {
+        Style::new().fg(p.accent).add_modifier(Modifier::BOLD)
+    };
     let mut volume = vec![
         Span::styled(" громкость ", Style::new().fg(p.dim)),
         Span::styled(
@@ -78,6 +84,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             format!("   {} ", app.config.audio_quality.label()),
             Style::new().fg(p.dim),
         ),
+        Span::styled("  повтор: ", Style::new().fg(p.dim)),
+        Span::styled(repeat.label(), repeat_style),
     ];
     if vol == 0 {
         volume.push(Span::styled("· mute", Style::new().fg(p.warning)));

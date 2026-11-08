@@ -78,7 +78,8 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
             app.config.audio_quality.label(),
             p,
         ),
-        setting_item(2, "Настройки Моей волны", "w", p),
+        setting_item(2, "Повтор воспроизведения", app.player.repeat.label(), p),
+        setting_item(3, "Настройки Моей волны", "w", p),
     ];
     let list = List::new(items)
         .block(panel(" Настройки ".to_string(), p))
