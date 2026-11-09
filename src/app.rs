@@ -305,9 +305,16 @@ impl App {
 
     fn wave_setup_len(&self) -> usize {
         match &self.wave_settings {
-            Some(settings) => 1 + settings.groups.len() + 1,
+            Some(settings) => 1 + settings.groups.len() + 2,
             None => 1,
         }
+    }
+
+    /// Позиции строк «Применить» и «Сбросить» на экране настроек волны.
+    fn wave_setup_actions(&self) -> Option<(usize, usize)> {
+        let settings = self.wave_settings.as_ref()?;
+        let apply = 1 + settings.groups.len();
+        Some((apply, apply + 1))
     }
 
     pub fn reset_selection(&mut self) {
@@ -1144,6 +1151,14 @@ fn cycle_wave_setup(app: &mut App, forward: bool) {
     app.wave_prefs_dirty = true;
     let _ = app.config.save();
     app.status_message = format!("{}: {}", group.name, value.name);
+}
+
+fn reset_wave_setup(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
+    app.config.reset_wave_settings();
+    app.wave_prefs_dirty = false;
+    let _ = app.config.save();
+    restart_wave(app, tx);
+    app.status_message = "Настройки Моей волны сброшены · волна перезапущена".into();
 }
 
 fn restart_wave(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
@@ -2179,7 +2194,6 @@ fn handle_key(
     }
 
     if app.screen == Screen::WaveSetup {
-        let action_row = app.wave_setup_len().saturating_sub(1);
         match key.code {
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 adjust_volume(app, VOLUME_STEP as i16)
@@ -2198,16 +2212,18 @@ fn handle_key(
                     restart_wave(app, tx);
                 }
             }
-            KeyCode::Enter => {
-                if app.selected() == Some(action_row) {
+            KeyCode::Enter => match (app.selected(), app.wave_setup_actions()) {
+                (Some(selected), Some((apply, _))) if selected == apply => {
                     app.wave_prefs_dirty = false;
                     app.screen = Screen::Wave;
                     app.reset_selection();
                     restart_wave(app, tx);
-                } else {
-                    cycle_wave_setup(app, true);
                 }
-            }
+                (Some(selected), Some((_, reset))) if selected == reset => {
+                    reset_wave_setup(app, tx);
+                }
+                _ => cycle_wave_setup(app, true),
+            },
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 app.wave_prefs_dirty = false;
                 app.screen = Screen::Wave;

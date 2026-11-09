@@ -140,12 +140,38 @@ impl Config {
         self.has_plus = account.plus;
     }
 
+    /// Сбрасывает персональные настройки Моей волны к стандартным.
+    pub fn reset_wave_settings(&mut self) {
+        self.wave_context = None;
+        self.wave_settings.clear();
+    }
+
     pub fn logout(&mut self) {
         self.oauth_token = None;
         self.login = None;
         self.uid = None;
         self.has_plus = false;
-        self.wave_context = None;
-        self.wave_settings.clear();
+        self.reset_wave_settings();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_wave_settings_clears_context_and_groups() {
+        let mut config = Config {
+            wave_context: Some("user:onyourwave".into()),
+            ..Config::default()
+        };
+        config
+            .wave_settings
+            .insert("moodEnergy".into(), "energetic".into());
+
+        config.reset_wave_settings();
+
+        assert!(config.wave_context.is_none());
+        assert!(config.wave_settings.is_empty());
     }
 }

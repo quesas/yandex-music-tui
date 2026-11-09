@@ -133,13 +133,8 @@ fn draw_wave_setup(f: &mut Frame, app: &mut App, area: Rect) {
                     p,
                 ));
             }
-            items.push(ListItem::new(Line::from(vec![
-                Span::styled("     ", Style::new()),
-                Span::styled(
-                    "Применить и перезапустить волну",
-                    Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
-                ),
-            ])));
+            items.push(action_item("Применить и перезапустить волну", p.accent));
+            items.push(action_item("Сбросить настройки волны", p.danger));
             items
         }
         None => vec![ListItem::new(Line::from(Span::styled(
@@ -207,6 +202,16 @@ fn setting_item(
         ),
         Span::raw("   "),
         Span::styled(value.to_string(), Style::new().fg(p.accent)),
+    ]))
+}
+
+fn action_item(label: &str, color: ratatui::style::Color) -> ListItem<'static> {
+    ListItem::new(Line::from(vec![
+        Span::styled("     ", Style::new()),
+        Span::styled(
+            label.to_string(),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
+        ),
     ]))
 }
 
