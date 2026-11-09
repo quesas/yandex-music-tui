@@ -2,6 +2,8 @@ mod api;
 mod app;
 pub mod auth;
 mod config;
+mod cover;
+mod lyrics;
 mod mpris;
 mod player;
 mod theme;

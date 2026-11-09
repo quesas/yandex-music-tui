@@ -10,6 +10,10 @@ pub struct Track {
     pub duration: u64,
 
     pub available: bool,
+
+    /// Ссылка на обложку трека (может содержать `%%` вместо размера).
+    #[serde(default)]
+    pub cover_uri: Option<String>,
 }
 
 impl Track {

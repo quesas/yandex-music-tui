@@ -7,6 +7,33 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
+    let lyrics_visible = app.show_lyrics
+        && matches!(
+            app.screen,
+            Screen::Wave | Screen::Library | Screen::Search | Screen::TrackList
+        );
+
+    if lyrics_visible && area.width >= 60 {
+        let ratio = if area.width >= 100 { 42 } else { 50 };
+        let lyrics_width = ((area.width as u32 * ratio / 100).clamp(28, 58) as u16)
+            .min(area.width.saturating_sub(28));
+        let [content, panel] = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(28), Constraint::Length(lyrics_width)])
+            .areas(area);
+        draw_screen(f, app, content);
+        super::lyrics::draw(f, app, panel);
+        return;
+    }
+
+    if lyrics_visible {
+        super::lyrics::draw(f, app, area);
+    } else {
+        draw_screen(f, app, area);
+    }
+}
+
+fn draw_screen(f: &mut Frame, app: &mut App, area: Rect) {
     match app.screen {
         Screen::Search => draw_search(f, app, area),
         Screen::Library => draw_library(f, app, area),

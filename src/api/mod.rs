@@ -6,10 +6,13 @@ pub use wave::{WaveBatch, WaveSettingGroup, WaveSettings};
 
 use crate::config::Quality;
 use anyhow::Result;
+use base64::Engine;
+use hmac::{Hmac, Mac};
 use serde_json::Value;
+use sha2::Sha256;
 use std::collections::HashSet;
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const BASE_URL: &str = "https://api.music.yandex.ru";
 
@@ -45,15 +48,20 @@ impl YandexClient {
     }
 
     fn auth_headers(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        self.auth_headers_for(request, "YandexMusicDesktopAppWindows/5.62.0")
+    }
+
+    fn auth_headers_for(
+        &self,
+        request: reqwest::RequestBuilder,
+        client: &str,
+    ) -> reqwest::RequestBuilder {
         let request = request
             .header(reqwest::header::USER_AGENT, USER_AGENT)
             .header(reqwest::header::ACCEPT, "application/json")
             .header(reqwest::header::ACCEPT_LANGUAGE, "ru")
             .header("Origin", "music-application://desktop")
-            .header(
-                "x-yandex-music-client",
-                "YandexMusicDesktopAppWindows/5.62.0",
-            )
+            .header("x-yandex-music-client", client)
             .header("x-yandex-music-without-invocation-info", "1");
 
         match &self.token {
@@ -65,6 +73,14 @@ impl YandexClient {
     pub(crate) async fn get_json(&self, path: &str, query: &[(&str, String)]) -> Result<Value> {
         let url = format!("{BASE_URL}/{path}");
         let req = self.auth_headers(self.http.get(url)).query(query);
+        self.send(req).await
+    }
+
+    async fn get_json_android(&self, path: &str, query: &[(&str, String)]) -> Result<Value> {
+        let url = format!("{BASE_URL}/{path}");
+        let req = self
+            .auth_headers_for(self.http.get(url), "YandexMusicAndroid/24023621")
+            .query(query);
         self.send(req).await
     }
 
@@ -276,6 +292,67 @@ impl YandexClient {
             .await?;
         if !resp.status().is_success() {
             anyhow::bail!("аудиофайл вернул HTTP {}", resp.status());
+        }
+        Ok(resp.bytes().await?.to_vec())
+    }
+
+    /// Загружает текст трека в формате LRC (с таймкодами).
+    ///
+    /// Если синхронизированного текста нет, возвращается обычный текст.
+    pub async fn track_lyrics(&self, track_id: &str) -> Result<String> {
+        match self.lyrics_download(track_id, "LRC").await {
+            Ok(lrc) if !lrc.trim().is_empty() => Ok(lrc),
+            Ok(_) => self.lyrics_download(track_id, "TEXT").await,
+            Err(err) if err.downcast_ref::<SessionExpired>().is_some() => Err(err),
+            Err(_) => self.lyrics_download(track_id, "TEXT").await,
+        }
+    }
+
+    async fn lyrics_download(&self, track_id: &str, format: &str) -> Result<String> {
+        let (timestamp, sign) = lyrics_sign(track_id);
+        let body = self
+            .get_json_android(
+                &format!("tracks/{track_id}/lyrics"),
+                &[
+                    ("format", format.to_string()),
+                    ("timeStamp", timestamp.to_string()),
+                    ("sign", sign),
+                ],
+            )
+            .await?;
+        let result = result_or_body(&body);
+
+        if let Some(text) = result.get("lyrics").and_then(Value::as_str) {
+            return Ok(text.to_string());
+        }
+
+        let url = result
+            .get("downloadUrl")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("в ответе нет ссылки на текст песни"))?;
+        let resp = self
+            .http
+            .get(url)
+            .header(reqwest::header::USER_AGENT, USER_AGENT)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("текст песни вернул HTTP {}", resp.status());
+        }
+        Ok(resp.text().await?)
+    }
+
+    /// Скачивает обложку трека. `%%` в ссылке заменяется на нужный размер.
+    pub async fn track_cover(&self, cover_uri: &str) -> Result<Vec<u8>> {
+        let url = cover_url(cover_uri, 400);
+        let resp = self
+            .http
+            .get(url)
+            .header(reqwest::header::USER_AGENT, USER_AGENT)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("обложка вернула HTTP {}", resp.status());
         }
         Ok(resp.bytes().await?.to_vec())
     }
@@ -591,6 +668,58 @@ fn artists_names(value: Option<&Value>) -> String {
         .unwrap_or_default()
 }
 
+const LYRICS_SIGN_KEY: &str = "p93jhgh689SBReK6ghtw62";
+
+fn lyrics_sign(track_id: &str) -> (u64, String) {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let mut mac = Hmac::<Sha256>::new_from_slice(LYRICS_SIGN_KEY.as_bytes())
+        .expect("HMAC принимает ключ любой длины");
+    mac.update(format!("{track_id}{timestamp}").as_bytes());
+    let sign = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+    (timestamp, sign)
+}
+
+fn cover_url(cover_uri: &str, size: u32) -> String {
+    let with_size = if cover_uri.contains("%%") {
+        cover_uri.replace("%%", &format!("{size}x{size}"))
+    } else {
+        cover_uri.to_string()
+    };
+    if with_size.starts_with("http://") || with_size.starts_with("https://") {
+        with_size
+    } else {
+        format!("https://{with_size}")
+    }
+}
+
+fn cover_uri_from_json(value: &Value) -> Option<String> {
+    value
+        .get("coverUri")
+        .and_then(Value::as_str)
+        .filter(|uri| !uri.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            value
+                .get("albums")
+                .and_then(Value::as_array)
+                .and_then(|albums| albums.first())
+                .and_then(|album| album.get("coverUri"))
+                .and_then(Value::as_str)
+                .filter(|uri| !uri.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            value
+                .get("ogImage")
+                .and_then(Value::as_str)
+                .filter(|uri| !uri.is_empty())
+                .map(str::to_string)
+        })
+}
+
 fn xml_value(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
@@ -629,6 +758,7 @@ pub(crate) fn track_from_json(value: &Value) -> Option<Track> {
         .get("available")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let cover_uri = cover_uri_from_json(value);
 
     Some(Track {
         id,
@@ -637,6 +767,7 @@ pub(crate) fn track_from_json(value: &Value) -> Option<Track> {
         artist,
         duration,
         available,
+        cover_uri,
     })
 }
 
@@ -764,6 +895,42 @@ mod tests {
         assert_eq!(parsed.id, "41075");
         assert_eq!(parsed.tracks_count, 146);
         assert_eq!(parsed.albums_count, 18);
+    }
+
+    #[test]
+    fn builds_cover_url_with_size() {
+        assert_eq!(
+            cover_url("avatars.yandex.net/get-music-content/1/cover/%%", 400),
+            "https://avatars.yandex.net/get-music-content/1/cover/400x400"
+        );
+        assert_eq!(
+            cover_url("https://example.com/cover.jpg", 400),
+            "https://example.com/cover.jpg"
+        );
+    }
+
+    #[test]
+    fn parses_cover_from_track_or_album() {
+        let track = serde_json::json!({
+            "id": 1,
+            "title": "Трек",
+            "coverUri": "avatars.yandex.net/track/%%",
+            "albums": [{"id": 2, "coverUri": "avatars.yandex.net/album/%%"}]
+        });
+        assert_eq!(
+            track_from_json(&track).unwrap().cover_uri.as_deref(),
+            Some("avatars.yandex.net/track/%%")
+        );
+
+        let album_only = serde_json::json!({
+            "id": 1,
+            "title": "Трек",
+            "albums": [{"id": 2, "coverUri": "avatars.yandex.net/album/%%"}]
+        });
+        assert_eq!(
+            track_from_json(&album_only).unwrap().cover_uri.as_deref(),
+            Some("avatars.yandex.net/album/%%")
+        );
     }
 
     #[test]

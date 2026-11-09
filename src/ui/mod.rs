@@ -2,6 +2,7 @@ pub mod confirm;
 pub mod content;
 pub mod help;
 pub mod login;
+pub mod lyrics;
 pub mod nav;
 pub mod player_bar;
 
@@ -85,10 +86,15 @@ fn draw_header(f: &mut Frame, app: &App, area: ratatui::prelude::Rect) {
     }
 
     if area.width >= 44 {
-        spans.push(Span::styled(
-            "   ? — подсказки",
-            Style::new().fg(palette.dim),
-        ));
+        let hint = if matches!(
+            app.screen,
+            Screen::Wave | Screen::Library | Screen::Search | Screen::TrackList
+        ) {
+            "   t — текст · ? — подсказки"
+        } else {
+            "   ? — подсказки"
+        };
+        spans.push(Span::styled(hint, Style::new().fg(palette.dim)));
     }
 
     f.render_widget(Paragraph::new(Line::from(spans)), area);

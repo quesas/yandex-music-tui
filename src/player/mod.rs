@@ -179,6 +179,7 @@ mod tests {
             artist: "Артист".into(),
             duration,
             available: true,
+            cover_uri: None,
         }
     }
 

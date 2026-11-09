@@ -3,6 +3,8 @@ use crate::api::{
     YandexClient,
 };
 use crate::config::{Config, Quality};
+use crate::cover::CoverImage;
+use crate::lyrics::Lyrics;
 use crate::mpris::{MprisCommand, MprisSnapshot, MprisTrack};
 use crate::player::engine::PlayState;
 use crate::player::{RepeatMode, TrackEnd};
@@ -107,6 +109,22 @@ impl Default for SearchState {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct LyricsState {
+    pub track_id: Option<String>,
+    pub loading: bool,
+    pub loaded: bool,
+    pub error: Option<String>,
+    pub lyrics: Lyrics,
+}
+
+#[derive(Debug, Default)]
+pub struct CoverState {
+    pub track_id: Option<String>,
+    pub loading: bool,
+    pub image: Option<CoverImage>,
+}
+
 #[derive(Debug, Clone)]
 pub enum TrackListSource {
     Artist(Artist),
@@ -181,6 +199,15 @@ pub struct App {
     pub search: SearchState,
     pub track_list: Option<TrackListState>,
 
+    /// Открыта ли правая панель с текстом песни и обложкой.
+    pub show_lyrics: bool,
+    pub lyrics: LyricsState,
+    pub cover: CoverState,
+    /// Плавное смещение текста в строках (может быть дробным).
+    pub lyrics_scroll: f32,
+    /// Высота видимой области текста, обновляется при отрисовке.
+    pub lyrics_view_height: u16,
+
     pub playback_source: PlaybackSource,
 
     pub liked_ids: HashSet<String>,
@@ -195,6 +222,8 @@ pub struct App {
     ratings_seq: u64,
     rating_seq: u64,
     wave_settings_seq: u64,
+    lyrics_seq: u64,
+    cover_seq: u64,
 }
 
 impl App {
@@ -219,6 +248,10 @@ impl App {
         self.wave_settings = None;
         self.wave_settings_loading = false;
         self.wave_prefs_dirty = false;
+        self.show_lyrics = false;
+        self.lyrics = LyricsState::default();
+        self.cover = CoverState::default();
+        self.lyrics_scroll = 0.0;
         self.player.stop();
         self.audio_seq += 1;
         self.tracklist_seq += 1;
@@ -301,6 +334,13 @@ impl App {
 
     pub fn is_disliked(&self, track: &Track) -> bool {
         self.disliked_ids.contains(&track.id)
+    }
+
+    /// Индекс текущей строки синхронизированного текста.
+    pub fn current_lyric_line(&self) -> Option<usize> {
+        self.lyrics
+            .lyrics
+            .current_index(self.player.engine.position)
     }
 
     fn ensure_login(&mut self) -> bool {
@@ -388,6 +428,16 @@ enum ApiEvent {
         track: Track,
         seq: u64,
     },
+    Lyrics {
+        result: Result<String, String>,
+        track_id: String,
+        seq: u64,
+    },
+    Cover {
+        result: Result<CoverImage, String>,
+        track_id: String,
+        seq: u64,
+    },
 }
 
 enum LibraryData {
@@ -425,6 +475,11 @@ pub async fn run() -> anyhow::Result<()> {
         library_loaded: [false; 3],
         search: SearchState::default(),
         track_list: None,
+        show_lyrics: false,
+        lyrics: LyricsState::default(),
+        cover: CoverState::default(),
+        lyrics_scroll: 0.0,
+        lyrics_view_height: 0,
         playback_source: PlaybackSource::Other,
         liked_ids: HashSet::new(),
         disliked_ids: HashSet::new(),
@@ -459,6 +514,8 @@ pub async fn run() -> anyhow::Result<()> {
         ratings_seq: 0,
         rating_seq: 0,
         wave_settings_seq: 0,
+        lyrics_seq: 0,
+        cover_seq: 0,
     };
     app.player.engine.volume = app.config.volume;
     app.player.repeat = app.config.repeat;
@@ -837,6 +894,46 @@ fn handle_api_event(app: &mut App, event: ApiEvent, tx: &mpsc::Sender<ApiEvent>)
                         app.status_message = format!("Ошибка лайка: {e}");
                     }
                 }
+            }
+        }
+        ApiEvent::Lyrics {
+            result,
+            track_id,
+            seq,
+        } => {
+            if seq != app.lyrics_seq || app.lyrics.track_id.as_deref() != Some(&track_id) {
+                return;
+            }
+            app.lyrics.loading = false;
+            app.lyrics.loaded = true;
+            match result {
+                Ok(raw) => {
+                    let lyrics = Lyrics::parse(&raw);
+                    if lyrics.lines.is_empty() {
+                        app.lyrics.error = Some("Текст песни не найден".into());
+                    } else {
+                        app.lyrics.lyrics = lyrics;
+                        app.lyrics.error = None;
+                        app.lyrics_scroll = 0.0;
+                    }
+                }
+                Err(e) => {
+                    app.lyrics.loaded = false;
+                    app.lyrics.error = Some(e);
+                }
+            }
+        }
+        ApiEvent::Cover {
+            result,
+            track_id,
+            seq,
+        } => {
+            if seq != app.cover_seq || app.cover.track_id.as_deref() != Some(&track_id) {
+                return;
+            }
+            app.cover.loading = false;
+            if let Ok(image) = result {
+                app.cover.image = Some(image);
             }
         }
     }
@@ -1437,6 +1534,133 @@ fn start_audio_load(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
     });
 }
 
+fn toggle_lyrics(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
+    app.show_lyrics = !app.show_lyrics;
+    if app.show_lyrics {
+        app.status_message = "Панель текста открыта · t — закрыть".into();
+        sync_lyrics(app, tx);
+    } else {
+        app.status_message = "Панель текста закрыта".into();
+    }
+}
+
+/// Подхватывает текст и обложку для играющего трека.
+fn sync_lyrics(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
+    if !app.show_lyrics || app.screen == Screen::Login {
+        return;
+    }
+
+    let Some(track) = app.player.current_track().cloned() else {
+        if app.lyrics.track_id.is_some() || app.cover.track_id.is_some() {
+            app.lyrics = LyricsState::default();
+            app.cover = CoverState::default();
+            app.lyrics_scroll = 0.0;
+        }
+        return;
+    };
+
+    if app.lyrics.track_id.as_deref() != Some(&track.id) {
+        start_lyrics_load(app, &track, tx);
+    }
+    if app.cover.track_id.as_deref() != Some(&track.id) {
+        start_cover_load(app, &track, tx);
+    }
+}
+
+fn start_lyrics_load(app: &mut App, track: &Track, tx: &mpsc::Sender<ApiEvent>) {
+    app.lyrics_seq += 1;
+    let seq = app.lyrics_seq;
+    let track_id = track.id.clone();
+    let client = app.client.clone();
+    let tx = tx.clone();
+
+    app.lyrics = LyricsState {
+        track_id: Some(track_id.clone()),
+        loading: true,
+        ..LyricsState::default()
+    };
+    app.lyrics_scroll = 0.0;
+
+    tokio::spawn(async move {
+        let result = client
+            .track_lyrics(&track_id)
+            .await
+            .map_err(|e| e.to_string());
+        let _ = tx
+            .send(ApiEvent::Lyrics {
+                result,
+                track_id,
+                seq,
+            })
+            .await;
+    });
+}
+
+fn start_cover_load(app: &mut App, track: &Track, tx: &mpsc::Sender<ApiEvent>) {
+    let Some(cover_uri) = track.cover_uri.clone() else {
+        app.cover = CoverState {
+            track_id: Some(track.id.clone()),
+            ..CoverState::default()
+        };
+        return;
+    };
+
+    app.cover_seq += 1;
+    let seq = app.cover_seq;
+    let track_id = track.id.clone();
+    let client = app.client.clone();
+    let tx = tx.clone();
+
+    app.cover = CoverState {
+        track_id: Some(track_id.clone()),
+        loading: true,
+        image: None,
+    };
+
+    tokio::spawn(async move {
+        let result = tokio::spawn(async move {
+            let bytes = client
+                .track_cover(&cover_uri)
+                .await
+                .map_err(|e| e.to_string())?;
+            tokio::task::spawn_blocking(move || CoverImage::decode(&bytes))
+                .await
+                .map_err(|e| e.to_string())?
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        let _ = tx
+            .send(ApiEvent::Cover {
+                result,
+                track_id,
+                seq,
+            })
+            .await;
+    });
+}
+
+fn update_lyrics_scroll(app: &mut App, dt: Duration) {
+    if !app.show_lyrics || app.lyrics_view_height == 0 {
+        return;
+    }
+    let Some(index) = app.current_lyric_line() else {
+        app.lyrics_scroll = 0.0;
+        return;
+    };
+
+    let height = app.lyrics_view_height as f32;
+    let anchor = (height * 0.42).floor();
+    let max_scroll = (app.lyrics.lyrics.lines.len() as f32 - height).max(0.0);
+    let target = ((index as f32 - anchor).max(0.0)).min(max_scroll);
+    let diff = target - app.lyrics_scroll;
+    if diff.abs() < 0.01 {
+        app.lyrics_scroll = target;
+    } else {
+        let ease = (dt.as_secs_f32() * 6.0).clamp(0.12, 0.55);
+        app.lyrics_scroll += diff * ease;
+    }
+}
+
 fn apply_quality(app: &mut App, quality: Quality, tx: &mpsc::Sender<ApiEvent>) {
     app.config.audio_quality = quality;
     let _ = app.config.save();
@@ -1580,6 +1804,8 @@ fn track_end_action(
 
 fn on_tick(app: &mut App, dt: Duration, tx: &mpsc::Sender<ApiEvent>) {
     let end = app.player.tick(dt);
+    sync_lyrics(app, tx);
+    update_lyrics_scroll(app, dt);
     if end != TrackEnd::Finished || app.player.current_track().is_none() {
         return;
     }
@@ -2063,6 +2289,10 @@ fn handle_key(
         }
         (KeyCode::Char('R'), _) => {
             cycle_repeat(app, true);
+            return AppAction::None;
+        }
+        (KeyCode::Char('t') | KeyCode::Char('T'), _) => {
+            toggle_lyrics(app, tx);
             return AppAction::None;
         }
         (KeyCode::Char('f') | KeyCode::Char('F'), _) => toggle_like(app, tx),

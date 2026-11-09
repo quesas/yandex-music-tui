@@ -11,8 +11,11 @@ the linked source repository. The versions used by this project are pinned in
 | Crate | Version | License | Source |
 | --- | --- | --- | --- |
 | anyhow | 1.0.104 | MIT OR Apache-2.0 | https://github.com/dtolnay/anyhow |
+| base64 | 0.22.1 | MIT OR Apache-2.0 | https://github.com/marshallpierce/rust-base64 |
 | crossterm | 0.29.0 | MIT | https://github.com/crossterm-rs/crossterm |
 | dirs | 7.0.0 | MIT OR Apache-2.0 | https://codeberg.org/dirs/dirs-rs |
+| hmac | 0.12.1 | MIT OR Apache-2.0 | https://github.com/RustCrypto/MACs |
+| image | 0.25.10 | MIT OR Apache-2.0 | https://github.com/image-rs/image |
 | mpris-server | 0.11.0 | MPL-2.0 | https://github.com/SeaDve/mpris-server |
 | rand | 0.10.3 | MIT OR Apache-2.0 | https://github.com/rust-random/rand |
 | ratatui | 0.30.2 | MIT | https://github.com/ratatui/ratatui |
@@ -20,9 +23,11 @@ the linked source repository. The versions used by this project are pinned in
 | rodio | 0.23.0 | MIT OR Apache-2.0 | https://github.com/RustAudio/rodio |
 | serde | 1.0.229 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
 | serde_json | 1.0.154 | MIT OR Apache-2.0 | https://github.com/serde-rs/json |
+| sha2 | 0.10.9 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
 | symphonia | 0.6.1 | MPL-2.0 | https://github.com/pdeljanov/Symphonia |
 | tokio | 1.54.1 | MIT | https://github.com/tokio-rs/tokio |
 | toml | 1.1.8+spec-1.1.0 | MIT OR Apache-2.0 | https://github.com/toml-rs/toml |
+| unicode-width | 0.2.3 | MIT OR Apache-2.0 | https://github.com/unicode-rs/unicode-width |
 
 ## Mozilla Public License 2.0
 
