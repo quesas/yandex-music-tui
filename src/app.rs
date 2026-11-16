@@ -2,7 +2,7 @@ use crate::api::{
     AccountInfo, Album, Artist, Playlist, SearchFilter, SearchItem, Track, WaveBatch, WaveSettings,
     YandexClient,
 };
-use crate::config::{Config, Quality};
+use crate::config::{Config, LyricsSource, Quality};
 use crate::cover::CoverImage;
 use crate::lyrics::Lyrics;
 use crate::mpris::{MprisCommand, MprisSnapshot, MprisTrack};
@@ -22,7 +22,7 @@ const SEEK_STEP: i64 = 5;
 
 const VOLUME_STEP: u8 = 5;
 
-const SETTINGS_COUNT: usize = 4;
+const SETTINGS_COUNT: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmAction {
@@ -1585,7 +1585,9 @@ fn sync_lyrics(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
 fn start_lyrics_load(app: &mut App, track: &Track, tx: &mpsc::Sender<ApiEvent>) {
     app.lyrics_seq += 1;
     let seq = app.lyrics_seq;
+    let track = track.clone();
     let track_id = track.id.clone();
+    let source = app.config.lyrics_source;
     let client = app.client.clone();
     let tx = tx.clone();
 
@@ -1597,8 +1599,7 @@ fn start_lyrics_load(app: &mut App, track: &Track, tx: &mpsc::Sender<ApiEvent>) 
     app.lyrics_scroll = 0.0;
 
     tokio::spawn(async move {
-        let result = client
-            .track_lyrics(&track_id)
+        let result = crate::lyrics::fetch_lyrics(source, &client, &track)
             .await
             .map_err(|e| e.to_string());
         let _ = tx
@@ -1972,6 +1973,19 @@ fn cycle_repeat(app: &mut App, forward: bool) {
     app.status_message = format!("Повтор: {}", mode.description());
 }
 
+fn set_lyrics_source(app: &mut App, source: LyricsSource, tx: &mpsc::Sender<ApiEvent>) {
+    app.config.lyrics_source = source;
+    let _ = app.config.save();
+    app.status_message = format!("Источник текста: {}", source.label());
+
+    // Сбрасываем уже загруженный текст, чтобы он перечитался из нового источника.
+    app.lyrics = LyricsState::default();
+    app.lyrics_scroll = 0.0;
+    if app.show_lyrics {
+        sync_lyrics(app, tx);
+    }
+}
+
 fn toggle_setting(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
     match app.selected() {
         Some(0) => {
@@ -1981,7 +1995,8 @@ fn toggle_setting(app: &mut App, tx: &mpsc::Sender<ApiEvent>) {
         }
         Some(1) => cycle_quality(app, true, tx),
         Some(2) => cycle_repeat(app, true),
-        Some(3) => open_wave_setup(app, tx),
+        Some(3) => set_lyrics_source(app, app.config.lyrics_source.next(), tx),
+        Some(4) => open_wave_setup(app, tx),
         _ => {}
     }
 }
@@ -1999,6 +2014,14 @@ fn cycle_setting(app: &mut App, forward: bool, tx: &mpsc::Sender<ApiEvent>) {
         }
         Some(1) => cycle_quality(app, forward, tx),
         Some(2) => cycle_repeat(app, forward),
+        Some(3) => {
+            let source = if forward {
+                app.config.lyrics_source.next()
+            } else {
+                app.config.lyrics_source.prev()
+            };
+            set_lyrics_source(app, source, tx);
+        }
         _ => {}
     }
 }

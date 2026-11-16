@@ -45,6 +45,44 @@ impl Quality {
     }
 }
 
+/// Откуда брать текст песни.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LyricsSource {
+    /// Сначала Яндекс, затем LRCLIB; синхронизированный текст в приоритете.
+    #[default]
+    Auto,
+    /// Только Яндекс Музыка.
+    Yandex,
+    /// Только сторонний сервис LRCLIB.
+    Lrclib,
+}
+
+impl LyricsSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Авто (Яндекс → LRCLIB)",
+            Self::Yandex => "Яндекс",
+            Self::Lrclib => "LRCLIB",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::Yandex,
+            Self::Yandex => Self::Lrclib,
+            Self::Lrclib => Self::Auto,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Auto => Self::Lrclib,
+            Self::Yandex => Self::Auto,
+            Self::Lrclib => Self::Yandex,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -65,6 +103,9 @@ pub struct Config {
     /// Режим повтора: выключен / альбом / текущий трек.
     pub repeat: RepeatMode,
 
+    /// Источник текста песни для правой панели.
+    pub lyrics_source: LyricsSource,
+
     pub wave_context: Option<String>,
 
     pub wave_settings: HashMap<String, String>,
@@ -81,6 +122,7 @@ impl Default for Config {
             volume: 70,
             theme: Theme::default(),
             repeat: RepeatMode::default(),
+            lyrics_source: LyricsSource::default(),
             wave_context: None,
             wave_settings: HashMap::new(),
         }
@@ -158,6 +200,16 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lyrics_source_cycles_in_both_directions() {
+        assert_eq!(LyricsSource::Auto.next(), LyricsSource::Yandex);
+        assert_eq!(LyricsSource::Yandex.next(), LyricsSource::Lrclib);
+        assert_eq!(LyricsSource::Lrclib.next(), LyricsSource::Auto);
+        assert_eq!(LyricsSource::Auto.prev(), LyricsSource::Lrclib);
+        assert_eq!(LyricsSource::Lrclib.prev(), LyricsSource::Yandex);
+        assert_eq!(LyricsSource::Yandex.prev(), LyricsSource::Auto);
+    }
 
     #[test]
     fn reset_wave_settings_clears_context_and_groups() {
